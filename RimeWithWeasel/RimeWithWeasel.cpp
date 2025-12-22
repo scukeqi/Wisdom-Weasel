@@ -4,10 +4,15 @@
 #include <StringAlgorithm.hpp>
 #include <WeaselConstants.h>
 #include <WeaselUtility.h>
+#include <FixedWMemStreamBuf.h>
+#include <InputContextHistory.h>
+#include <LLMPredictor.h>
+#include <OpenAIPredictor.h>
 
 #include <filesystem>
 #include <map>
 #include <regex>
+#include <set>
 #include <rime_api.h>
 
 #define TRANSPARENT_COLOR 0x00000000
@@ -27,6 +32,7 @@ typedef enum { COLOR_ABGR = 0, COLOR_ARGB, COLOR_RGBA } ColorFormat;
 #define TRIMHEAD_REGEX std::regex("0x", std::regex::icase)
 #endif
 using namespace weasel;
+static bool hide_ime_mode_icon = false;
 
 static RimeApi* rime_api;
 WeaselSessionId _GenerateNewWeaselSessionId(SessionStatusMap sm, DWORD pid) {
@@ -81,7 +87,7 @@ void _RefreshTrayIcon(const RimeSessionId session_id,
   auto ret = rime_api->get_property(session_id, "client_app", app_name,
                                     sizeof(app_name) - 1);
   if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
-    boost::thread th([=]() {
+    auto th = std::make_unique<ScopedThread>([=]() {
       ::Sleep(100);
       if (_UpdateUICallback)
         _UpdateUICallback();
@@ -116,10 +122,44 @@ void RimeWithWeaselHandler::Initialize() {
 
   LOG(INFO) << "Initializing la rime.";
   rime_api->initialize(NULL);
-  if (rime_api->start_maintenance(/*full_check = */ False)) {
-    m_disabled = true;
+  
+  // 初始化上下文历史
+  m_context_history = std::make_unique<weasel::InputContextHistory>(100, std::chrono::seconds(300));
+  
+  // 初始化LLM预测器（使用单独的配置对象，避免与后续配置冲突）
+  RimeConfig llm_config = {NULL};
+  if (rime_api->config_open("weasel", &llm_config)) {
+    Bool llm_enabled = False;
+    rime_api->config_get_bool(&llm_config, "llm/enabled", &llm_enabled);
+    
+    if (llm_enabled) {
+      char llm_type_str[32] = {0};
+      if (rime_api->config_get_string(&llm_config, "llm/type", llm_type_str, 32)) {
+        std::string llm_type = llm_type_str;
+        if (llm_type == "openai") {
+          m_llm_predictor = weasel::LLMPredictorFactory::Create(weasel::LLMPredictorFactory::OPENAI_COMPATIBLE);
+          if (m_llm_predictor) {
+            LOG(INFO) << "LLM predictor initialized: " << m_llm_predictor->GetName();
+          } else {
+            LOG(WARNING) << "Failed to initialize LLM predictor";
+          }
+        }
+      }
+    }
+    rime_api->config_close(&llm_config);
   }
-
+  HANDLE hMutex =
+      CreateMutexW(NULL, FALSE, L"Global\\WeaselStartMaintenanceMutex");
+  if (hMutex) {
+    if (WaitForSingleObject(hMutex, 0) == WAIT_OBJECT_0) {
+      if (rime_api->start_maintenance(/*full_check = */ False)) {
+        rime_api->join_maintenance_thread();
+        m_disabled = true;
+      }
+      ReleaseMutex(hMutex);
+    }
+    CloseHandle(hMutex);
+  }
   RimeConfig config = {NULL};
   if (rime_api->config_open("weasel", &config)) {
     if (m_ui) {
@@ -298,7 +338,21 @@ void RimeWithWeaselHandler::CommitComposition(WeaselSessionId ipc_id) {
   DLOG(INFO) << "Commit composition: ipc_id = " << ipc_id;
   if (m_disabled)
     return;
-  rime_api->commit_composition(to_session_id(ipc_id));
+  
+  // 获取提交的文本并记录到上下文历史
+  RIME_STRUCT(RimeContext, ctx);
+  RimeSessionId session_id = to_session_id(ipc_id);
+  if (rime_api->get_context(session_id, &ctx)) {
+    if (ctx.commit_text_preview) {
+      std::wstring commit_text = u8tow(ctx.commit_text_preview);
+      if (m_context_history && !commit_text.empty()) {
+        m_context_history->AddEntry(commit_text);
+      }
+    }
+    rime_api->free_context(&ctx);
+  }
+  
+  rime_api->commit_composition(session_id);
   _UpdateUI(ipc_id);
   m_active_session = ipc_id;
 }
@@ -319,7 +373,43 @@ void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(
              << ", index = " << index;
   if (m_disabled)
     return;
-  rime_api->select_candidate_on_current_page(to_session_id(ipc_id), index);
+  
+  SessionStatus& session_status = get_session_status(ipc_id);
+  RimeSessionId session_id = session_status.session_id;
+  
+  // 检查是否是LLM预测的候选词
+  if (index >= (size_t)session_status.original_candidate_count) {
+    // 这是LLM预测的候选词
+    size_t llm_index = index - session_status.original_candidate_count;
+    if (llm_index < session_status.llm_candidates.size()) {
+      std::wstring llm_text = session_status.llm_candidates[llm_index];
+      
+      // 记录到上下文历史
+      if (m_context_history && !llm_text.empty()) {
+        m_context_history->AddEntry(llm_text);
+      }
+      
+      // 保存待提交的LLM文本，在_Respond中处理
+      session_status.pending_llm_commit = llm_text;
+      
+      // 清空当前composition，以便提交LLM文本
+      rime_api->clear_composition(session_id);
+      
+      // 调用_Respond来发送commit消息
+      auto eat = [](std::wstring& msg) -> bool { return true; };
+      _Respond(ipc_id, eat);
+      _UpdateUI(ipc_id);
+      
+      // 清除pending标记
+      session_status.pending_llm_commit.clear();
+      
+      LOG(INFO) << "Committed LLM candidate: " << wtou8(llm_text);
+      return;
+    }
+  }
+  
+  // 正常Rime候选词，使用原有逻辑
+  rime_api->select_candidate_on_current_page(session_id, index);
 }
 
 bool RimeWithWeaselHandler::HighlightCandidateOnCurrentPage(
@@ -411,7 +501,7 @@ void RimeWithWeaselHandler::_ReadClientInfo(WeaselSessionId ipc_id,
   std::string app_name;
   std::string client_type;
   // parse request text
-  wbufferstream bs(buffer, WEASEL_IPC_BUFFER_LENGTH);
+  WMemStream bs((wchar_t*)buffer, WEASEL_IPC_BUFFER_LENGTH);
   std::wstring line;
   while (bs.good()) {
     std::getline(bs, line);
@@ -457,10 +547,12 @@ void RimeWithWeaselHandler::_ReadClientInfo(WeaselSessionId ipc_id,
 }
 
 void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
-                                              RimeContext& ctx) {
+                                              RimeContext& ctx,
+                                              RimeSessionId session_id) {
   cinfo.candies.resize(ctx.menu.num_candidates);
   cinfo.comments.resize(ctx.menu.num_candidates);
   cinfo.labels.resize(ctx.menu.num_candidates);
+  int original_candidate_count = ctx.menu.num_candidates;
   for (int i = 0; i < ctx.menu.num_candidates; ++i) {
     cinfo.candies[i].str = escape_string(u8tow(ctx.menu.candidates[i].text));
     if (ctx.menu.candidates[i].comment) {
@@ -479,6 +571,22 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
   cinfo.highlighted = ctx.menu.highlighted_candidate_index;
   cinfo.currentPage = ctx.menu.page_no;
   cinfo.is_last_page = ctx.menu.is_last_page;
+  
+  // 使用LLM增强候选词（原始数量会在_EnhanceCandidatesWithLLM中保存）
+  if (m_llm_predictor && m_llm_predictor->IsAvailable() && ctx.composition.length > 0) {
+    std::wstring preedit = u8tow(ctx.composition.preedit);
+    _EnhanceCandidatesWithLLM(cinfo, preedit, original_candidate_count, session_id);
+  } else {
+    // 如果没有LLM预测，也要保存原始数量
+    // 需要通过session_id找到对应的ipc_id
+    for (auto& pair : m_session_status_map) {
+      if (pair.second.session_id == session_id) {
+        pair.second.original_candidate_count = original_candidate_count;
+        pair.second.llm_candidates.clear();
+        break;
+      }
+    }
+  }
 }
 
 void RimeWithWeaselHandler::StartMaintenance() {
@@ -751,13 +859,22 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
 
   SessionStatus& session_status = get_session_status(ipc_id);
   RimeSessionId session_id = session_status.session_id;
-  RIME_STRUCT(RimeCommit, commit);
-  if (rime_api->get_commit(session_id, &commit)) {
+  
+  // 检查是否有待提交的LLM文本
+  if (!session_status.pending_llm_commit.empty()) {
     actions.insert("commit");
-
-    std::string commit_text = escape_string<char>(commit.text);
+    std::string commit_text = escape_string<char>(wtou8(session_status.pending_llm_commit));
     messages.push_back(std::string("commit=") + commit_text + '\n');
-    rime_api->free_commit(&commit);
+    // 注意：不清除pending_llm_commit，让它在SelectCandidateOnCurrentPage中清除
+  } else {
+    RIME_STRUCT(RimeCommit, commit);
+    if (rime_api->get_commit(session_id, &commit)) {
+      actions.insert("commit");
+
+      std::string commit_text = escape_string<char>(commit.text);
+      messages.push_back(std::string("commit=") + commit_text + '\n');
+      rime_api->free_commit(&commit);
+    }
   }
 
   bool is_composing = false;
@@ -827,7 +944,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
           break;
         case UIStyle::PREVIEW_ALL:
           CandidateInfo cinfo;
-          _GetCandidateInfo(cinfo, ctx);
+          _GetCandidateInfo(cinfo, ctx, session_id);
           std::string topush = std::string("ctx.preedit=") +
                                escape_string<char>(ctx.composition.preedit) +
                                "  [";
@@ -871,7 +988,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
       CandidateInfo cinfo;
       std::wstringstream ss;
       boost::archive::text_woarchive oa(ss);
-      _GetCandidateInfo(cinfo, ctx);
+      _GetCandidateInfo(cinfo, ctx, session_id);
 
       oa << cinfo;
 
@@ -888,6 +1005,8 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
 
   // style
   if (!session_status.__synced) {
+    messages.push_back(std::string("config.hide_ime_mode_icon=") +
+                       std::to_string((int)hide_ime_mode_icon) + "\n");
     std::wstringstream ss;
     boost::archive::text_woarchive oa(ss);
     oa << session_status.style;
@@ -1112,6 +1231,7 @@ static void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize) {
   _RimeGetIntStr(config, "style/font_point", style.font_point);
   if (style.font_point <= 0)
     style.font_point = 12;
+  _RimeGetBool(config, "hide_ime_mode_icon", initialize, hide_ime_mode_icon);
   _RimeGetIntStr(config, "style/label_font_point", style.label_font_point,
                  "style/font_point", 0, _abs);
   _RimeGetIntStr(config, "style/comment_font_point", style.comment_font_point,
@@ -1432,7 +1552,7 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
     }
     if (ctx.menu.num_candidates) {
       CandidateInfo& cinfo(weasel_context.cinfo);
-      _GetCandidateInfo(cinfo, ctx);
+      _GetCandidateInfo(cinfo, ctx, session_id);
     }
     rime_api->free_context(&ctx);
   }
@@ -1456,4 +1576,88 @@ void RimeWithWeaselHandler::_UpdateInlinePreeditStatus(WeaselSessionId ipc_id) {
   rime_api->set_option(session_id, "inline_preedit", Bool(inline_preedit));
   // show soft cursor on weasel panel but not inline
   rime_api->set_option(session_id, "soft_cursor", Bool(!inline_preedit));
+}
+
+void RimeWithWeaselHandler::_EnhanceCandidatesWithLLM(CandidateInfo& cinfo,
+                                                      const std::wstring& preedit,
+                                                      int original_count,
+                                                      RimeSessionId session_id) {
+  if (!m_context_history || !m_llm_predictor || preedit.empty()) {
+    return;
+  }
+  
+  // 找到对应的session status并保存原始数量
+  SessionStatus* session_status_ptr = nullptr;
+  for (auto& pair : m_session_status_map) {
+    if (pair.second.session_id == session_id) {
+      session_status_ptr = &pair.second;
+      session_status_ptr->original_candidate_count = original_count;
+      session_status_ptr->llm_candidates.clear();
+      break;
+    }
+  }
+  
+  try {
+    // 获取上下文
+    std::wstring context = m_context_history->GetRecentContext(200);
+    
+    // 调用LLM预测
+    weasel::LLMPrediction prediction = m_llm_predictor->Predict(context, preedit, 3);
+    
+    if (prediction.success && !prediction.candidates.empty()) {
+      // 将LLM预测的候选词添加到列表末尾
+      // 先检查是否与现有候选词重复
+      std::set<std::wstring> existing_candidates;
+      for (const auto& candy : cinfo.candies) {
+        existing_candidates.insert(candy.str);
+      }
+      
+      for (const auto& llm_candidate : prediction.candidates) {
+        // 跳过空字符串和重复的候选词
+        if (llm_candidate.empty() || existing_candidates.find(llm_candidate) != existing_candidates.end()) {
+          continue;
+        }
+        
+        // 限制候选词长度
+        if (llm_candidate.length() > 10) {
+          continue;
+        }
+        
+        // 添加到候选词列表
+        Text candy_text;
+        candy_text.str = llm_candidate;
+        cinfo.candies.push_back(candy_text);
+        
+        // 添加对应的注释（标记为LLM预测）
+        Text comment_text;
+        comment_text.str = L"★";
+        cinfo.comments.push_back(comment_text);
+        
+        // 添加标签
+        size_t new_index = cinfo.candies.size() - 1;
+        cinfo.labels.push_back(std::to_wstring((new_index + 1) % 10));
+        
+        // 保存LLM候选词到session status
+        if (session_status_ptr) {
+          session_status_ptr->llm_candidates.push_back(llm_candidate);
+        }
+        
+        existing_candidates.insert(llm_candidate);
+        
+        // 限制最多添加3个LLM候选词
+        if (cinfo.candies.size() - original_count >= 3) {
+          break;
+        }
+      }
+      
+      // 更新总页数（如果需要）
+      if (cinfo.candies.size() > 0) {
+        int candidates_per_page = 9; // 默认每页9个候选词
+        cinfo.totalPages = (cinfo.candies.size() + candidates_per_page - 1) / candidates_per_page;
+      }
+    }
+  } catch (...) {
+    // 忽略LLM预测错误，不影响正常输入
+    LOG(WARNING) << "Error in LLM prediction, ignored";
+  }
 }
