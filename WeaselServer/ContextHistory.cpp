@@ -35,8 +35,17 @@ void ContextHistory::AddText(const std::wstring& text, DevConsole* dev_console) 
       m_history.push_back(word);
       words_added++;
     }
-    while (m_history.size() > m_max_size) {
-      m_history.erase(m_history.begin());
+    if (!m_memory_compressor || !m_memory_compressor->IsAvailable()) {
+      size_t batch = GetCompressWordCount();
+      if (batch == 0) batch = 1;
+      while (m_history.size() > m_max_size) {
+        size_t erase_count = (std::min)(batch, m_history.size());
+        m_history.erase(m_history.begin(), m_history.begin() + erase_count);
+      }
+    } else {
+      while (m_history.size() > m_max_size) {
+        m_history.erase(m_history.begin());
+      }
     }
     current_size = m_history.size();
     if (current_size >= m_max_size && m_memory_compressor &&

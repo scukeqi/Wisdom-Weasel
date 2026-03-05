@@ -29,7 +29,6 @@ compile_commands.json
 /output/data/*.yaml
 /output/archives
 /include/glog
-/include/rime*.h
 /ipch
 env.bat
 weasel.props

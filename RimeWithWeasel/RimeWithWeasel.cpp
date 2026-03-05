@@ -1064,20 +1064,14 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   _GetStatus(weasel_status, ipc_id, weasel_context);
 
   // 判断是否需要获取上下文
-  // 条件1：非TSF模式时总是获取
-  // 条件2：TSF模式下，有LLM候选词且无Rime候选词时才获取
-  bool has_llm_candidates = m_llm_prediction_mode && !m_current_llm_candidates.empty();
-  bool need_context = !is_tsf;
-  
-  if (is_tsf && has_llm_candidates) {
-    // TSF模式下，检查是否有Rime候选词
-    RIME_STRUCT(RimeContext, ctx);
-    if (rime_api->get_context(session_id, &ctx)) {
-      // 如果没有Rime候选词，需要获取上下文以显示LLM候选词
-      need_context = (ctx.menu.num_candidates == 0);
-      rime_api->free_context(&ctx);
-    }
-  }
+  // - 非TSF模式：总是获取
+  // - 有LLM候选词时：无论是否TSF，都需要获取，以便在_UI中合并Rime+LLM候选
+  bool has_llm_candidates = false;
+
+
+  has_llm_candidates = m_llm_prediction_mode && !m_current_llm_candidates.empty();
+
+  bool need_context = !is_tsf || has_llm_candidates;
   
   if (need_context) {
     _GetContext(weasel_context, session_id);
@@ -2234,33 +2228,46 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id, const 
 
   LOG(INFO) << "[LLM] Context length: " << context.length();
   LOG(INFO) << "[LLM] Current input: " << wtou8(current_input);
-  LOG(INFO) << "[LLM] Calling LLMProvider::PredictCandidates";
+  LOG(INFO) << "[LLM] Scheduling async LLMProvider::PredictCandidates";
 
-  // 调用LLM预测（同步调用，实际应该使用异步）
-  // 将当前输入（拼音）作为第二个参数传递给PredictCandidates
-  m_current_llm_candidates =
-      m_llm_provider->PredictCandidates(context, current_input, 5);
+  // 生成新的请求序号，用于标记“最新一次”预测请求
+  const uint64_t request_seq = ++m_llm_request_seq;
 
-  LOG(INFO) << "[LLM] LLMProvider returned " << m_current_llm_candidates.size() << " candidates";
+  // 拷贝必要参数到后台线程
+  std::wstring context_copy = context;
+  std::wstring current_input_copy = current_input;
 
-  if (m_dev_console && m_dev_console->IsEnabled()) {
-    if (m_current_llm_candidates.empty()) {
-      m_dev_console->WriteLine(L"[LLM] 结果：未获得任何候选词");
-    } else {
-      std::wstringstream ss;
-      ss << L"[LLM] 结果：获得 " << m_current_llm_candidates.size() << L" 个候选词";
-      m_dev_console->WriteLine(ss.str());
-      for (size_t i = 0; i < m_current_llm_candidates.size(); ++i) {
-        std::wstringstream ss2;
-        ss2 << L"  [" << (i + 1) << L"] " << m_current_llm_candidates[i];
-        m_dev_console->WriteLine(ss2.str());
-      }
+  std::thread([this, ipc_id, request_seq, context_copy, current_input_copy]() {
+    // 后台线程中执行同步 PredictCandidates，不阻塞用户输入线程
+    LOG(INFO) << "[LLM] Async thread calling LLMProvider::PredictCandidates, seq=" << request_seq;
+    auto candidates = m_llm_provider->PredictCandidates(context_copy, current_input_copy, 5);
+
+    // 如果有更新的请求已经发起，则丢弃本次结果
+    if (request_seq != m_llm_request_seq.load()) {
+      LOG(INFO) << "[LLM] Discarding stale LLM result, seq=" << request_seq
+                << ", latest_seq=" << m_llm_request_seq.load();
+      return;
     }
-    m_dev_console->WriteLine(L"[LLM] ========== 预测结束 ==========");
-  }
 
-  // 更新UI显示LLM候选词
-  _UpdateUI(ipc_id);
+    // 将结果写入共享状态
+    {
+      std::lock_guard<std::mutex> lock(m_llm_mutex);
+      m_current_llm_candidates = std::move(candidates);
+    }
+
+    size_t candidate_count = m_current_llm_candidates.size();
+    LOG(INFO) << "[LLM] Async LLMProvider returned " << candidate_count << " candidates, seq=" << request_seq;
+
+    if (m_dev_console && m_dev_console->IsEnabled()) {
+      std::wstringstream ss;
+      ss << L"[LLM] 异步预测完成，获得 " << candidate_count << L" 个候选词";
+      m_dev_console->WriteLine(ss.str());
+      m_dev_console->WriteLine(L"[LLM] ========== 预测结束 ==========");
+    }
+
+    // 更新UI显示LLM候选词
+    _UpdateUI(ipc_id);
+  }).detach();
 }
 
 void RimeWithWeaselHandler::_ExitLLMPredictionMode(WeaselSessionId ipc_id) {
