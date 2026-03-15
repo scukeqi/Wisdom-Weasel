@@ -3,7 +3,7 @@
 基于 [Rime 小狼毫（Weasel）](https://github.com/rime/weasel) 开源输入法，增加 **基于大语言模型（LLM）的智能预测** 功能：在保留 Rime 全套方案与词库的前提下，用 LLM 根据当前输入与历史上下文生成候选词，支持本地推理与云端 API 多种后端。
 
 ---
-
+![demo](demo.gif)
 ## 功能特性
 
 - **多后端 LLM 预测**
@@ -29,7 +29,9 @@
 
 ## 安装与构建
 
-- **直接使用（待完成）**：从 [Releases](https://github.com/scukeqi/Wisdom-Weasel/releases)下载安装包，安装后与官方小狼毫一样使用，并在 `weasel.yaml` 中启用并配置 LLM 。
+- **直接使用**：从 [Releases](https://github.com/scukeqi/Wisdom-Weasel/releases)下载安装包，安装后与官方小狼毫一样使用。
+  - 配置初始拼音输入方案,如：[雾凇拼音](https://github.com/iDvel/rime-ice)等。
+  - `weasel.yaml` 中启用并配置 LLM 。
 - **从源码构建**：  
   - 运行 `build.bat x64`  
   - 依赖与官方 Weasel 一致（如 Boost、librime、yaml-cpp 等，见项目与 `weasel.props`）。  
@@ -39,8 +41,7 @@
 
 ## LLM 配置说明
 
-配置写在 **Rime 用户目录** 下的 `weasel.yaml`中。路径一般为：`%AppData%\Rime\weasel.yaml`。
-
+配置写在 **Rime 用户目录** 下的 `weasel.yaml`中。
 ### 总开关与提供者类型
 
 ```yaml
@@ -80,10 +81,11 @@ llm:
     max_tokens: 8
     temperature: "0.6"
     n_threads: 4
-    model_type: "Instruct"   # 或 "Base" 推荐
+    model_type: "Instruct"   # 或 推荐"Base" 
 ```
 
 ### 3. HF Constraint（`provider_type: hf_constraint`）
+[hf_backend 详细配置步骤](https://github.com/scukeqi/Wisdom-Weasel/blob/main/hf_backend/README.md)
 
 拼音约束接口，请求体形如：`{"prompt": "历史上下文", "pinyin_constraints": ["当前输入"]}`：
 
@@ -111,20 +113,26 @@ llm:
 
 不配置或 `enabled: false` 时，不进行记忆压缩，仅使用固定长度的最近上下文。
 
+### 启用调试日志终端输出
+
+```yaml
+dev_console:
+  enabled: true
+```
 ---
 
 ## 使用说明
 
 - 安装/构建完成后，与官方小狼毫相同：在输入法指示器中选择【中】图标即可使用。  
-- 通过 **开始菜单 → 小狼毫输入法** 可访问「用户文件夹」「重新部署」等。  
+- 通过右键托盘图标 **小狼毫输入法** 可访问「用户文件夹」「重新部署」等。  
 - 修改 `weasel.yaml` 中 LLM 相关配置后，需要 **重新部署** 或重启 Weasel 服务后生效。  
-- 若需调试，可开启开发终端（若本版提供）查看 LLM 请求与日志。
+
 
 ---
 
 ## 致谢与许可证
 
-- 本分支在 [Rime 小狼毫（Weasel）](https://github.com/rime/weasel) 基础上开发，致谢原项目作者与社区（佛振、鄒旭、Xiangyan Sun、Prcuvu、nameoverflow、fxliang、Azuk 443 等）。  
+- 本分支在 [Rime 小狼毫（Weasel）](https://github.com/rime/weasel) 基础上开发，致谢原项目作者与社区。  
 - 输入方案与程序设计、美术、引用开源软件等说明见 [原仓库](https://github.com/rime/weasel)。  
 - **许可证**：GPLv3（与 Weasel 一致）。  
 - 项目主页：https://rime.im  
