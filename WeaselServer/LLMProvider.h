@@ -21,7 +21,8 @@ class LLMProvider {
   virtual std::vector<std::wstring> PredictCandidates(
       const std::wstring& context,
       const std::wstring& current_input,
-      size_t max_candidates) = 0;
+      size_t max_candidates,
+      const std::wstring& preference_hint = L"") = 0;
 
   // 检查LLM是否可用
   virtual bool IsAvailable() const = 0;
@@ -39,7 +40,8 @@ class OpenAICompatibleProvider : public LLMProvider {
   bool LoadConfig(const std::string& config_name) override;
   std::vector<std::wstring> PredictCandidates(const std::wstring& context,
                                               const std::wstring& current_input,
-                                              size_t max_candidates) override;
+                                              size_t max_candidates,
+                                              const std::wstring& preference_hint = L"") override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "OpenAI Compatible"; }
 
@@ -74,7 +76,8 @@ class LlamaCppProvider : public LLMProvider {
   bool LoadConfig(const std::string& config_name) override;
   std::vector<std::wstring> PredictCandidates(const std::wstring& context,
                                               const std::wstring& current_input,
-                                              size_t max_candidates) override;
+                                              size_t max_candidates,
+                                              const std::wstring& preference_hint = L"") override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "llama.cpp Local"; }
 
@@ -128,7 +131,8 @@ class HFConstraintProvider : public LLMProvider {
   bool LoadConfig(const std::string& config_name) override;
   std::vector<std::wstring> PredictCandidates(const std::wstring& context,
                                               const std::wstring& current_input,
-                                              size_t max_candidates) override;
+                                              size_t max_candidates,
+                                              const std::wstring& preference_hint = L"") override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "HF Constraint"; }
 

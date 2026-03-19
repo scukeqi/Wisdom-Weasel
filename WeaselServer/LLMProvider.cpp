@@ -325,10 +325,11 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
 std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
     const std::wstring& context,
     const std::wstring& current_input,
-    size_t max_candidates) {
+    size_t max_candidates,
+    const std::wstring& preference_hint) {
   std::vector<std::wstring> candidates;
 
-  if (!IsAvailable() || context.empty()) {
+  if (!IsAvailable() || (context.empty() && preference_hint.empty())) {
     return candidates;
   }
 
@@ -346,14 +347,20 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
       L"5. 确保候选词都是有效的中文词汇或常用短语\n"
       L"6. 返回词数严格不超过" +
       std::to_wstring(max_candidates) +
-      L"个\n\n"
+      L"个\n";
+  if (!preference_hint.empty()) {
+    prompt +=
+        L"7. 优先贴近“用户偏好”里的常用词和表达习惯，但不要违背当前上下文和当前输入\n";
+  }
+  prompt += L"\n"
       L"上下文：\"" +
       context +
-      L"\"\n"
-      L"当前输入：\"" +
-      current_input +
-      L"\"\n"
-      L"候选词：";
+      L"\"\n";
+  if (!preference_hint.empty()) {
+    prompt += L"用户偏好：\"" + preference_hint + L"\"\n";
+  }
+  prompt += L"当前输入：\"" + current_input + L"\"\n"
+            L"候选词：";
 
   // 构建JSON请求体
   std::string prompt_utf8 = wtou8(prompt);
@@ -382,6 +389,9 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] 发送预测请求");
     g_dev_console->WriteLine(L"  上下文: " + context);
+    if (!preference_hint.empty()) {
+      g_dev_console->WriteLine(L"  用户偏好: " + preference_hint);
+    }
     g_dev_console->WriteLine(L"  请求URL: " + u8tow(m_api_url));
     g_dev_console->WriteLine(L"  请求体: " + u8tow(request_body));
   }

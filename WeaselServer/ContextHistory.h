@@ -5,6 +5,8 @@
 #include <mutex>
 #include <memory>
 #include <functional>
+#include <map>
+#include <cstdint>
 
 // 前向声明
 class DevConsole;
@@ -29,6 +31,9 @@ class ContextHistory {
   // 返回的字符串用空格分隔
   std::wstring GetRecentContext(size_t count) const;
 
+  // 获取用户近期输入偏好摘要（按偏好强度排序，词之间用空格分隔）
+  std::wstring GetPreferenceHint(size_t count) const;
+
   // 获取所有历史记录
   std::vector<std::wstring> GetAllHistory() const;
 
@@ -49,11 +54,18 @@ class ContextHistory {
   // 将文本分割成词（简单实现：按空格和标点符号分割）
   std::vector<std::wstring> SplitIntoWords(const std::wstring& text) const;
 
+  // 对输入词进行去重，保留顺序
+  std::vector<std::wstring> DeduplicateWords(
+      const std::vector<std::wstring>& words) const;
+
   // 判断字符是否为分隔符
   bool IsSeparator(wchar_t ch) const;
 
   // 当 size >= max_size 时尝试异步压缩最旧的 (max_size/2) 个词（不阻塞）
   void TryTriggerCompression(DevConsole* dev_console);
+
+  // 在持锁状态下根据当前历史重建偏好统计
+  void RebuildPreferenceStatsUnlocked();
 
   // 每次压缩取最旧的词数（max_size 的一半）
   size_t GetCompressWordCount() const { return m_max_size / 2; }
@@ -67,6 +79,12 @@ class ContextHistory {
 
   mutable std::mutex m_mutex;  // 线程安全锁
   std::vector<std::wstring> m_history;  // 历史记录（线性：最旧在 0，最新在 back）
+  struct PreferenceStat {
+    size_t count = 0;
+    uint64_t last_seen_order = 0;
+  };
+  std::map<std::wstring, PreferenceStat> m_preference_stats;  // 输入偏好统计
+  uint64_t m_preference_sequence;  // 单调递增序号，用于表达近期偏好
   size_t m_max_size;  // 最大记录数量
   MemoryCompressor* m_memory_compressor;  // 记忆压缩 LLM（可为 nullptr）
   bool m_compressing;  // 是否正在压缩，避免重复触发

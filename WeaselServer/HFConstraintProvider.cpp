@@ -132,15 +132,20 @@ bool HFConstraintProvider::LoadConfig(const std::string& config_name) {
 std::vector<std::wstring> HFConstraintProvider::PredictCandidates(
     const std::wstring& context,
     const std::wstring& current_input,
-    size_t max_candidates) {
+    size_t max_candidates,
+    const std::wstring& preference_hint) {
   std::vector<std::wstring> candidates;
 
-  if (!IsAvailable() || context.empty()) {
+  if (!IsAvailable() || (context.empty() && preference_hint.empty())) {
     return candidates;
   }
 
   // 允许空上下文（冷启动），仍向后端发送请求，与 RimeWithWeasel 的“支持冷启动”一致
-  std::string prompt_utf8 = wtou8(context);
+  std::wstring prompt_text = context;
+  if (!preference_hint.empty()) {
+    prompt_text += L"\n用户偏好：" + preference_hint;
+  }
+  std::string prompt_utf8 = wtou8(prompt_text);
   std::string escaped_prompt = EscapeJsonString(prompt_utf8);
 
   // pinyin_constraints: 当前输入，按空格分割为拼音音节数组
@@ -173,6 +178,9 @@ std::vector<std::wstring> HFConstraintProvider::PredictCandidates(
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] [HF Constraint] 发送预测请求");
     g_dev_console->WriteLine(L"  上下文: " + context);
+    if (!preference_hint.empty()) {
+      g_dev_console->WriteLine(L"  用户偏好: " + preference_hint);
+    }
     g_dev_console->WriteLine(L"  当前输入: " + current_input);
     g_dev_console->WriteLine(L"  请求URL: " + u8tow(m_api_url));
     g_dev_console->WriteLine(L"  请求体: " + u8tow(request_body));
