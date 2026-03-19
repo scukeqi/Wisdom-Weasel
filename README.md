@@ -9,7 +9,7 @@
 - **多后端 LLM 预测**
   - **OpenAI 兼容**（`provider_type: openai`）：任意 OpenAI 兼容 API（如 OpenAI、Ollama、本地 openai-api 等），通过 `llm/openai/` 配置。
   - **llama.cpp 本地**（`provider_type: llamacpp`）：本地 GGUF 模型，内置 llama.cpp 推理，通过 `llm/llamacpp/` 配置。
-  - **HF Constraint**（`provider_type: hf_constraint`）：支持拼音约束生成Python后端，通过 `llm/hf_constraint/` 配置。
+  - **HF Constraint**（`provider_type: hf_constraint`）：支持拼音约束生成 Python 后端，通过 `llm/hf_constraint/` 配置；现已补充 `Qwen/Qwen3.5-4B-Base` 下载、QLoRA 微调、反馈遥测与再训练脚手架。
 - **上下文历史**：维护用户最近输入词序列，作为 LLM 预测的上下文。
 - **输入偏好跟随**：自动统计用户近期常用词/表达偏好，提示 LLM 优先贴近用户输入习惯。
 - **输入去重**：对单次输入中的重复词做去重，并跳过连续重复写入，降低噪声上下文。
@@ -51,6 +51,9 @@ llm:
   enabled: true
   provider_type: openai   # 可选: openai | llamacpp | hf_constraint
   developer_mode: false   # 可选：在候选词右下角注释中显示来源
+  context_recent_words: 20   # 可选：预测时最多读取多少个最近词
+  context_max_chars: 160     # 可选：最终传给 LLM 的上下文最大字符数，适合小模型
+  input_prediction_debounce_ms: 120   # 可选：普通输入自动触发 LLM 的防抖时间
 ```
 
 ### 1. OpenAI 兼容（`provider_type: openai`）
@@ -100,6 +103,8 @@ llm:
 
 ### 3. HF Constraint（`provider_type: hf_constraint`）
 [hf_backend 详细配置步骤](https://github.com/scukeqi/Wisdom-Weasel/blob/main/hf_backend/README.md)
+
+如需本地训练/反馈微调，可直接查看 `hf_backend/Bootstrap-Qwen35Pinyin.ps1` 与 `hf_backend/training/train_config.sample.json`。
 
 拼音约束接口，请求体形如：`{"prompt": "历史上下文", "pinyin_constraints": ["当前输入"]}`：
 

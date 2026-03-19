@@ -3,6 +3,10 @@
 torch>=2.0.0
 transformers>=4.36.0
 accelerate>=0.25.0
+datasets>=2.18.0
+peft>=0.11.0
+huggingface_hub>=0.25.0
+pyyaml>=6.0.0
 
 # API/server
 fastapi>=0.104.0

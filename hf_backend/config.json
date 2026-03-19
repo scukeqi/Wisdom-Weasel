@@ -1,13 +1,26 @@
 {
-  "comment": "后端推理服务配置文件",
-  "model_id": "your-model-path",
-  "torch_dtype": "bfloat16",
+  "comment": "HF Constraint 后端标准档：优先使用效果更好的 Qwen3 4B 官方模型。",
+  "model_id": "Qwen/Qwen3-4B",
+  "torch_dtype": "auto",
   "device_map": "auto",
+  "trust_remote_code": false,
+  "adapter_path": null,
+  "merge_adapter_on_load": false,
+  "model_kwargs": {},
+  "prompting": {
+    "use_chat_template": true,
+    "system_prompt": "你是 Wisdom Weasel 输入法候选生成模型。请根据历史上下文和当前拼音，输出最自然、最贴合用户意图的中文候选。只输出候选文本本身，不要解释，不要编号，不要额外标点。"
+  },
+  "telemetry": {
+    "enabled": true,
+    "directory": "telemetry"
+  },
   "generation": {
     "max_new_tokens_no_constraint": 4,
-    "num_beams": 10,
-    "num_return_sequences": 5,
-    "num_beam_groups": 5,
-    "diversity_penalty_no_constraint": 100.0
+    "num_beams": 4,
+    "num_return_sequences": 4,
+    "num_beam_groups": 2,
+    "diversity_penalty_no_constraint": 0.4,
+    "diversity_penalty_with_constraint": 0.2
   }
 }

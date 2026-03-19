@@ -10,16 +10,32 @@ class Config:
     
     DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config.json"
     DEFAULT_CONFIG = {
-        "model_id": "your-model-name",
+        "model_id": "Qwen/Qwen3-4B",
         "torch_dtype": "bfloat16",
         "device_map": "auto",
+        "trust_remote_code": False,
+        "adapter_path": None,
+        "merge_adapter_on_load": False,
+        "model_kwargs": {},
+        "prompting": {
+            "use_chat_template": True,
+            "system_prompt": (
+                "你是 Wisdom Weasel 输入法候选生成模型。"
+                "请根据历史上下文和当前拼音，输出最自然、最贴合用户意图的中文候选。"
+                "只输出候选文本本身，不要解释，不要编号，不要额外标点。"
+            )
+        },
+        "telemetry": {
+            "enabled": True,
+            "directory": "telemetry"
+        },
         "generation": {
             "max_new_tokens_no_constraint": 4,
-            "num_beams": 10,
-            "num_return_sequences": 5,
-            "num_beam_groups": 5,
-            "diversity_penalty_no_constraint": 100.0,
-            "diversity_penalty_with_constraint": 0.5
+            "num_beams": 4,
+            "num_return_sequences": 4,
+            "num_beam_groups": 2,
+            "diversity_penalty_no_constraint": 0.4,
+            "diversity_penalty_with_constraint": 0.2
         }
     }
     
@@ -48,11 +64,52 @@ class Config:
     def get_model_id(self) -> str:
         return self.get("model_id")
     
-    def get_torch_dtype(self) -> torch.dtype:
-        return getattr(torch, self.get("torch_dtype"))
-    
+    def get_torch_dtype(self) -> Any:
+        torch_dtype = self.get("torch_dtype")
+        if torch_dtype in (None, "auto"):
+            return torch_dtype
+        return getattr(torch, torch_dtype)
+
     def get_device_map(self) -> str:
         return self.get("device_map")
+
+    def get_trust_remote_code(self) -> bool:
+        return bool(self.get("trust_remote_code", False))
+
+    def get_adapter_path(self) -> Optional[str]:
+        adapter_path = self.get("adapter_path")
+        return str(adapter_path) if adapter_path else None
+
+    def should_merge_adapter_on_load(self) -> bool:
+        return bool(self.get("merge_adapter_on_load", False))
+
+    def get_model_kwargs(self) -> dict:
+        model_kwargs = self.get("model_kwargs", {})
+        return model_kwargs if isinstance(model_kwargs, dict) else {}
+
+    def get_prompting_config(self) -> dict:
+        prompting = self.get("prompting", {})
+        return prompting if isinstance(prompting, dict) else {}
+
+    def use_chat_template(self) -> bool:
+        return bool(self.get_prompting_config().get("use_chat_template", True))
+
+    def get_system_prompt(self) -> str:
+        prompting = self.get_prompting_config()
+        default = self.DEFAULT_CONFIG["prompting"]["system_prompt"]
+        value = prompting.get("system_prompt", default)
+        return value if isinstance(value, str) and value.strip() else default
+
+    def get_telemetry_config(self) -> dict:
+        telemetry = self.get("telemetry", {})
+        return telemetry if isinstance(telemetry, dict) else {}
+
+    def is_telemetry_enabled(self) -> bool:
+        return bool(self.get_telemetry_config().get("enabled", True))
+
+    def get_telemetry_directory(self) -> Path:
+        configured = self.get_telemetry_config().get("directory", "telemetry")
+        return (Path(__file__).parent.parent / configured).resolve()
     
     def get_generation_config(self) -> dict:
         return self.get("generation", {})
@@ -61,19 +118,19 @@ class Config:
         return self.get("generation", {}).get("max_new_tokens_no_constraint", 4)
     
     def get_num_beams(self) -> int:
-        return self.get("generation", {}).get("num_beams", 10)
+        return self.get("generation", {}).get("num_beams", 4)
     
     def get_num_return_sequences(self) -> int:
-        return self.get("generation", {}).get("num_return_sequences", 5)
+        return self.get("generation", {}).get("num_return_sequences", 4)
     
     def get_num_beam_groups(self) -> int:
-        return self.get("generation", {}).get("num_beam_groups", 5)
+        return self.get("generation", {}).get("num_beam_groups", 2)
     
     def get_diversity_penalty_no_constraint(self) -> float:
-        return self.get("generation", {}).get("diversity_penalty_no_constraint", 100.0)
+        return self.get("generation", {}).get("diversity_penalty_no_constraint", 0.4)
     
     def get_diversity_penalty_with_constraint(self) -> float:
-        return self.get("generation", {}).get("diversity_penalty_with_constraint", 0.5)
+        return self.get("generation", {}).get("diversity_penalty_with_constraint", 0.2)
     
     def to_dict(self) -> dict:
         return self.config.copy()
