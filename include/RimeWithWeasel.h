@@ -7,6 +7,7 @@
 #include <memory>
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 #include <rime_api.h>
 
@@ -98,6 +99,14 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   ContextHistory* GetContextHistory() const { return m_context_history; }
 
  private:
+  struct DisplayCandidate {
+    enum class Source { Rime, LLM };
+
+    Source source;
+    size_t index;
+    bool matched_by_llm;
+  };
+
   void _Setup();
   bool _IsDeployerRunning();
   void _UpdateUI(WeaselSessionId ipc_id);
@@ -114,6 +123,19 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
                   weasel::Context& ctx);
   void _GetContext(weasel::Context& ctx, RimeSessionId session_id);
   void _UpdateShowNotifications(RimeConfig* config, bool initialize = false);
+  std::vector<std::wstring> _SnapshotLLMCandidates();
+  std::vector<DisplayCandidate> _BuildDisplayCandidates(
+      const RimeContext* ctx,
+      const std::vector<std::wstring>& llm_candidates);
+  std::wstring _GetDisplayLabel(const RimeContext& ctx, size_t display_index);
+  bool _TryResolveDisplaySelectionIndex(const weasel::KeyEvent& key_event,
+                                        const RimeContext& ctx,
+                                        size_t display_candidate_count,
+                                        size_t& display_index);
+  bool _SelectDisplayCandidate(const DisplayCandidate& candidate,
+                               const std::vector<std::wstring>& llm_candidates,
+                               WeaselSessionId ipc_id,
+                               EatLine eat);
 
   bool _IsSessionTSF(RimeSessionId session_id);
   void _UpdateInlinePreeditStatus(WeaselSessionId ipc_id);
@@ -164,6 +186,9 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   std::wstring m_pending_llm_commit;  // 待提交的LLM候选词
   std::atomic<uint64_t> m_llm_request_seq{0};  // LLM异步预测请求序号（用于丢弃旧结果）
   std::mutex m_llm_mutex;                      // 保护 m_current_llm_candidates
+  bool m_llm_developer_mode;
+  bool m_has_display_highlight_override;
+  size_t m_display_highlight_override;
   
   // 双击·键检测（用于清空上下文）
   DWORD m_last_grave_key_time;  // 上次·键按下的时间（毫秒）

@@ -848,10 +848,11 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
 std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
     const std::wstring& context,
     const std::wstring& current_input,
-    size_t max_candidates) {
+    size_t max_candidates,
+    const std::wstring& preference_hint) {
   std::vector<std::wstring> candidates;
 
-  if (!IsAvailable() || context.empty()) {
+  if (!IsAvailable() || (context.empty() && preference_hint.empty())) {
     return candidates;
   }
 
@@ -877,15 +878,27 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
                                  L"3. 按可能性从高到低排列\n"
                                  L"4. 如果上下文为空或无关，仅基于当前输入预测\n"
                                  L"5. 确保候选词都是有效的中文词汇或常用短语\n"
-                                 L"6. 返回词数严格不超过" + std::to_wstring(max_candidates) + L"个\n\n";
+                                 L"6. 返回词数严格不超过" + std::to_wstring(max_candidates) + L"个\n";
+    if (!preference_hint.empty()) {
+      system_prompt +=
+          L"7. 优先贴近“用户偏好”里的常用词和表达习惯，但不要违背当前上下文和当前输入\n";
+    }
+    system_prompt += L"\n";
     std::wstring user_prompt = L"上下文：\"" + context + L"\"\n"
-                               L"当前输入：\"" + current_input + L"\"\n"
+                               + (!preference_hint.empty()
+                                      ? (L"用户偏好：\"" + preference_hint + L"\"\n")
+                                      : L"")
+                               + L"当前输入：\"" + current_input + L"\"\n"
                                L"候选词：";
     system_prompt_utf8 = wtou8(system_prompt);
     prompt_utf8 = wtou8(user_prompt);
   } else {
     // Base 模型：直接使用 context + current_input 作为补全前缀，无额外指令
-    std::wstring context_prefix = context + current_input;
+    std::wstring context_prefix = context;
+    if (!preference_hint.empty()) {
+      context_prefix += L" " + preference_hint;
+    }
+    context_prefix += current_input;
     system_prompt_utf8.clear();
     prompt_utf8 = wtou8(context_prefix);
   }
@@ -894,6 +907,9 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] 发送预测请求 (llama.cpp)");
     g_dev_console->WriteLine(L"  上下文: " + context);
+    if (!preference_hint.empty()) {
+      g_dev_console->WriteLine(L"  用户偏好: " + preference_hint);
+    }
     g_dev_console->WriteLine(L"  当前输入: " + current_input);
   }
 

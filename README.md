@@ -11,6 +11,8 @@
   - **llama.cpp 本地**（`provider_type: llamacpp`）：本地 GGUF 模型，内置 llama.cpp 推理，通过 `llm/llamacpp/` 配置。
   - **HF Constraint**（`provider_type: hf_constraint`）：支持拼音约束生成Python后端，通过 `llm/hf_constraint/` 配置。
 - **上下文历史**：维护用户最近输入词序列，作为 LLM 预测的上下文。
+- **输入偏好跟随**：自动统计用户近期常用词/表达偏好，提示 LLM 优先贴近用户输入习惯。
+- **输入去重**：对单次输入中的重复词做去重，并跳过连续重复写入，降低噪声上下文。
 - **可选记忆压缩**：历史超过容量时，可异步调用单独配置的 LLM（`llm/memory/`）将旧词压缩为摘要，节省上下文长度。
 - **与 Rime 并存**：预测候选与 Rime 方案候选一起展示，不改变原有方案、词库与部署流程。
 
@@ -48,6 +50,7 @@
 llm:
   enabled: true
   provider_type: openai   # 可选: openai | llamacpp | hf_constraint
+  developer_mode: false   # 可选：在候选词右下角注释中显示来源
 ```
 
 ### 1. OpenAI 兼容（`provider_type: openai`）
