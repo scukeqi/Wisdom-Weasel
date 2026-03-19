@@ -1,0 +1,52 @@
+{
+  "base_model_id": "Qwen/Qwen3.5-4B-Base",
+  "dataset_path": "./data/processed/pinyin_sft.jsonl",
+  "feedback_dataset_path": "./data/processed/feedback_sft.jsonl",
+  "output_dir": "./checkpoints/qwen35-pinyin-lora",
+  "max_seq_length": 256,
+  "eval_ratio": 0.02,
+  "seed": 42,
+  "load_in_4bit": true,
+  "bnb_4bit_quant_type": "nf4",
+  "bnb_4bit_use_double_quant": true,
+  "trust_remote_code": false,
+  "system_prompt": "你是 Wisdom Weasel 输入法候选生成模型。请根据历史上下文和当前拼音，输出最自然、最贴合用户意图的中文候选。只输出候选文本本身，不要解释，不要编号，不要额外标点。",
+  "lora": {
+    "r": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "bias": "none",
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "training_args": {
+    "per_device_train_batch_size": 1,
+    "per_device_eval_batch_size": 1,
+    "gradient_accumulation_steps": 16,
+    "num_train_epochs": 1,
+    "learning_rate": 0.0002,
+    "warmup_ratio": 0.03,
+    "weight_decay": 0.0,
+    "logging_steps": 10,
+    "save_steps": 100,
+    "eval_steps": 100,
+    "save_total_limit": 2,
+    "gradient_checkpointing": true,
+    "gradient_checkpointing_kwargs": {
+      "use_reentrant": false
+    },
+    "lr_scheduler_type": "cosine",
+    "optim": "paged_adamw_8bit",
+    "max_grad_norm": 0.3,
+    "report_to": "none",
+    "bf16": true,
+    "fp16": false
+  }
+}
