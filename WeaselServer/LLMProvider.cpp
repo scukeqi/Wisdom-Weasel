@@ -661,9 +661,6 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
          << "],"
          << "\"max_tokens\":" << m_max_tokens << ","
          << "\"temperature\":" << m_temperature;
-    if (use_json_output && !m_has_custom_response_format) {
-      json << ",\"response_format\":{\"type\":\"json_object\"}";
-    }
     if (!extra_body_members.empty()) {
       json << "," << extra_body_members;
     }
@@ -673,8 +670,8 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
 
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(use_json_output
-                                   ? L"[LLM] 发送预测请求（JSON 约束模式）"
-                                   : L"[LLM] 发送预测请求（纯文本回退模式）");
+                                   ? L"[LLM] 发送预测请求（显式 JSON 约束模式）"
+                                   : L"[LLM] 发送预测请求（默认纯文本模式）");
       g_dev_console->WriteLine(L"  上下文: " + context);
       g_dev_console->WriteLine(L"  请求URL: " + u8tow(m_api_url));
       g_dev_console->WriteLine(L"  请求体: " + u8tow(request_body));
@@ -696,11 +693,12 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
     return ParseResponse(response_body);
   };
 
-  candidates = send_request(true);
-  if (candidates.empty() && !m_has_custom_response_format) {
+  const bool use_json_output = m_has_custom_response_format;
+  candidates = send_request(use_json_output);
+  if (candidates.empty() && use_json_output) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(
-          L"[LLM] JSON 约束输出解析失败，回退到纯文本请求重试");
+          L"[LLM] 显式 JSON 输出解析失败，回退到纯文本请求重试");
     }
     candidates = send_request(false);
   }

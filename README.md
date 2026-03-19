@@ -66,6 +66,8 @@ llm:
     temperature: "0.6"
     extra_body:   # 可选：透传额外 JSON 请求字段（支持嵌套 map/list）
       reasoning_effort: "low"
+      response_format:   # 仅在你明确需要约束 JSON 输出时再配置；默认不会自动附加
+        type: "json_object"
       thinking:
         type: "disabled"
       chat_template_kwargs:
@@ -75,7 +77,8 @@ llm:
       X-Provider-Feature: "beta"
 ```
 
-`extra_body` 会合并到最终的 OpenAI 兼容请求 JSON 中，适合传入不同厂商的关闭 thinking、限制 CoT/推理预算等专有参数；`extra_headers` 用于补充额外请求头。
+`extra_body` 会合并到最终的 OpenAI 兼容请求 JSON 中，适合传入不同厂商的关闭 thinking、限制 CoT/推理预算等专有参数；`extra_headers` 用于补充额外请求头。  
+注意：程序默认仍使用纯文本提示词与解析方式；只有当你显式配置 `extra_body.response_format` 时，才会按你提供的约束格式请求结构化输出。
 
 ### 2. llama.cpp 本地（`provider_type: llamacpp`）
 
