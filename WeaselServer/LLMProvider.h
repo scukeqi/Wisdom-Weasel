@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <cstdint>
+#include <utility>
 
 // LLM提供者抽象基类
 class LLMProvider {
@@ -36,10 +37,9 @@ class OpenAICompatibleProvider : public LLMProvider {
   ~OpenAICompatibleProvider() override;
 
   bool LoadConfig(const std::string& config_name) override;
-  std::vector<std::wstring> PredictCandidates(
-      const std::wstring& context,
-      const std::wstring& current_input,
-      size_t max_candidates) override;
+  std::vector<std::wstring> PredictCandidates(const std::wstring& context,
+                                              const std::wstring& current_input,
+                                              size_t max_candidates) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "OpenAI Compatible"; }
 
@@ -58,8 +58,10 @@ class OpenAICompatibleProvider : public LLMProvider {
   std::string m_model;
   int m_max_tokens;
   double m_temperature;
-  void* m_hSession;       // HINTERNET，复用的 WinHTTP 会话
-  void* m_hConnect;       // HINTERNET，复用的连接
+  std::string m_extra_body_json;
+  std::vector<std::pair<std::string, std::string>> m_extra_headers;
+  void* m_hSession;          // HINTERNET，复用的 WinHTTP 会话
+  void* m_hConnect;          // HINTERNET，复用的连接
   std::string m_cached_url;  // 当前连接对应的 URL，变化时重建连接
 };
 
@@ -70,10 +72,9 @@ class LlamaCppProvider : public LLMProvider {
   ~LlamaCppProvider() override;
 
   bool LoadConfig(const std::string& config_name) override;
-  std::vector<std::wstring> PredictCandidates(
-      const std::wstring& context,
-      const std::wstring& current_input,
-      size_t max_candidates) override;
+  std::vector<std::wstring> PredictCandidates(const std::wstring& context,
+                                              const std::wstring& current_input,
+                                              size_t max_candidates) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "llama.cpp Local"; }
 
@@ -84,32 +85,38 @@ class LlamaCppProvider : public LLMProvider {
   void Cleanup();
   // 生成文本
   std::string GenerateText(const std::string& prompt, size_t max_tokens);
-  // 批量采样：n_parallel 条序列并行，每条只生成一个词（最多 max_new_tokens 个 token）；与单次生成一样复用 system 的 KV cache
-  std::vector<std::string> GenerateCandidatesBatch(const std::string& system_prompt_utf8, const std::string& user_prompt_utf8, size_t n_parallel, int max_new_tokens);
+  // 批量采样：n_parallel 条序列并行，每条只生成一个词（最多 max_new_tokens 个
+  // token）；与单次生成一样复用 system 的 KV cache
+  std::vector<std::string> GenerateCandidatesBatch(
+      const std::string& system_prompt_utf8,
+      const std::string& user_prompt_utf8,
+      size_t n_parallel,
+      int max_new_tokens);
   // 预处理并缓存 system prompt 的 KV 状态
   bool PrepareSystemPrompt(const std::string& system_prompt_utf8);
 
   bool m_enabled;
-  std::string m_model_path;      // 模型文件路径
-  int m_n_ctx;                    // 上下文大小
-  int m_n_gpu_layers;             // GPU层数
-  int m_max_tokens;               // 最大生成token数
-  double m_temperature;           // 温度参数
-  int m_n_threads;                // 线程数
-  bool m_instruct_model;          // true=Instruct 使用指令 prompt，false=Base 仅用 context 补全
+  std::string m_model_path;  // 模型文件路径
+  int m_n_ctx;               // 上下文大小
+  int m_n_gpu_layers;        // GPU层数
+  int m_max_tokens;          // 最大生成token数
+  double m_temperature;      // 温度参数
+  int m_n_threads;           // 线程数
+  bool m_instruct_model;  // true=Instruct 使用指令 prompt，false=Base 仅用
+                          // context 补全
 
   // llama.cpp 对象（使用前向声明避免包含头文件）
-  void* m_model;                  // llama_model*
-  void* m_context;                // llama_context*
-  void* m_sampler;                 // llama_sampler*
-  void* m_memory;                  // llama_memory_t (缓存，避免每次获取)
-  void* m_vocab;                   // const llama_vocab* (缓存，避免每次获取)
-  int m_ctx_size;                  // 实际上下文大小（缓存，避免每次获取）
+  void* m_model;    // llama_model*
+  void* m_context;  // llama_context*
+  void* m_sampler;  // llama_sampler*
+  void* m_memory;   // llama_memory_t (缓存，避免每次获取)
+  void* m_vocab;    // const llama_vocab* (缓存，避免每次获取)
+  int m_ctx_size;   // 实际上下文大小（缓存，避免每次获取）
   std::string m_system_prompt_utf8;
   std::vector<uint8_t> m_system_state;
   size_t m_system_state_size;
   bool m_system_prompt_ready;
-  bool m_model_loaded;             // 模型是否已加载
+  bool m_model_loaded;  // 模型是否已加载
 };
 
 // HF Constraint 接口提供者（/v1/generate/completions）
@@ -117,15 +124,13 @@ class LlamaCppProvider : public LLMProvider {
 class HFConstraintProvider : public LLMProvider {
  public:
   HFConstraintProvider();
-  ~HFConstraintProvider() override;  bool LoadConfig(const std::string& config_name) override;
-  std::vector<std::wstring> PredictCandidates(
-      const std::wstring& context,
-      const std::wstring& current_input,
-      size_t max_candidates) override;
+  ~HFConstraintProvider() override;
+  bool LoadConfig(const std::string& config_name) override;
+  std::vector<std::wstring> PredictCandidates(const std::wstring& context,
+                                              const std::wstring& current_input,
+                                              size_t max_candidates) override;
   bool IsAvailable() const override;
-  std::string GetProviderName() const override {
-    return "HF Constraint";
-  }
+  std::string GetProviderName() const override { return "HF Constraint"; }
 
  private:
   bool ExecuteRequest(const std::string& url,

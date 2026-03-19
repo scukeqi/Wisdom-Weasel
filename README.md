@@ -64,7 +64,18 @@ llm:
     model: "gpt-3.5-turbo"
     max_tokens: 20
     temperature: "0.6"
+    extra_body:   # 可选：透传额外 JSON 请求字段（支持嵌套 map/list）
+      reasoning_effort: "low"
+      thinking:
+        type: "disabled"
+      chat_template_kwargs:
+        enable_thinking: false
+        thinking_budget: 0
+    extra_headers:   # 可选：追加 HTTP 请求头；若要自定义鉴权可留空 api_key 并在此填写
+      X-Provider-Feature: "beta"
 ```
+
+`extra_body` 会合并到最终的 OpenAI 兼容请求 JSON 中，适合传入不同厂商的关闭 thinking、限制 CoT/推理预算等专有参数；`extra_headers` 用于补充额外请求头。
 
 ### 2. llama.cpp 本地（`provider_type: llamacpp`）
 
@@ -109,6 +120,10 @@ llm:
     api_key: "your-api-key"
     model: "gpt-3.5-turbo"
     max_tokens: 200
+    extra_body:
+      reasoning_effort: "low"
+    extra_headers:
+      X-Memory-Route: "compressor"
 ```
 
 不配置或 `enabled: false` 时，不进行记忆压缩，仅使用固定长度的最近上下文。
