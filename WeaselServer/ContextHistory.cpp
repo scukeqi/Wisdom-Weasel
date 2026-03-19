@@ -112,7 +112,7 @@ std::wstring ContextHistory::GetRecentContext(size_t count) const {
 
 std::wstring ContextHistory::GetPreferenceHint(size_t count) const {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (m_preference_stats.empty() || count == 0) {
+  if (m_history.empty() || count == 0) {
     return L"";
   }
 
@@ -122,9 +122,25 @@ std::wstring ContextHistory::GetPreferenceHint(size_t count) const {
     uint64_t last_seen_order;
   };
 
+  const size_t recent_window_size =
+      (std::min)(m_history.size(), (std::max)(count * 6, static_cast<size_t>(18)));
+  const size_t start = m_history.size() - recent_window_size;
+  std::map<std::wstring, PreferenceStat> recent_preference_stats;
+  uint64_t recent_sequence = 0;
+
+  for (size_t i = start; i < m_history.size(); ++i) {
+    const std::wstring& word = m_history[i];
+    if (word.empty()) {
+      continue;
+    }
+    PreferenceStat& stat = recent_preference_stats[word];
+    stat.count++;
+    stat.last_seen_order = ++recent_sequence;
+  }
+
   std::vector<RankedPreference> ranked_preferences;
-  ranked_preferences.reserve(m_preference_stats.size());
-  for (const auto& entry : m_preference_stats) {
+  ranked_preferences.reserve(recent_preference_stats.size());
+  for (const auto& entry : recent_preference_stats) {
     ranked_preferences.push_back(
         {entry.first, entry.second.count, entry.second.last_seen_order});
   }

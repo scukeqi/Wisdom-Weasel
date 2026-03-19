@@ -1,10 +1,26 @@
 #pragma once
 
-#include <string>
-#include <vector>
-#include <memory>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <utility>
+#include <vector>
+
+enum class LLMRequestType : uint8_t {
+  NoInputPrediction = 0,
+  PinyinConstrainedPrediction = 1,
+  RimeReorder = 2,
+};
+
+struct LLMRequest {
+  LLMRequestType type = LLMRequestType::NoInputPrediction;
+  std::wstring context;          // 最近上下文
+  std::wstring current_input;    // 当前拼音/输入串
+  std::wstring preference_hint;  // 用户偏好弱提示
+  std::vector<std::wstring> rime_candidates;  // Rime 原始候选，仅 Rime 重排使用
+  size_t max_candidates = 5;
+};
 
 // LLM提供者抽象基类
 class LLMProvider {
@@ -14,15 +30,9 @@ class LLMProvider {
   // 从配置文件加载配置
   virtual bool LoadConfig(const std::string& config_name) = 0;
 
-  // 预测候选词
-  // context: 历史上下文
-  // current_input: 当前输入（可为空）
-  // max_candidates: 最大候选词数量
-  virtual std::vector<std::wstring> PredictCandidates(
-      const std::wstring& context,
-      const std::wstring& current_input,
-      size_t max_candidates,
-      const std::wstring& preference_hint = L"") = 0;
+  // 执行统一请求，由主程序提前分流请求类型
+  virtual std::vector<std::wstring> ExecuteRequest(
+      const LLMRequest& request) = 0;
 
   // 检查LLM是否可用
   virtual bool IsAvailable() const = 0;
@@ -38,18 +48,16 @@ class OpenAICompatibleProvider : public LLMProvider {
   ~OpenAICompatibleProvider() override;
 
   bool LoadConfig(const std::string& config_name) override;
-  std::vector<std::wstring> PredictCandidates(const std::wstring& context,
-                                              const std::wstring& current_input,
-                                              size_t max_candidates,
-                                              const std::wstring& preference_hint = L"") override;
+  std::vector<std::wstring> ExecuteRequest(
+      const LLMRequest& request) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "OpenAI Compatible"; }
 
  private:
   // 执行HTTP请求
-  bool ExecuteRequest(const std::string& url,
-                      const std::string& request_body,
-                      std::string& response_body);
+  bool ExecuteHttpRequest(const std::string& url,
+                          const std::string& request_body,
+                          std::string& response_body);
   // 解析JSON响应
   std::vector<std::wstring> ParseResponse(const std::string& json_response);
   void CloseConnection();  // 关闭并清空复用的 HTTP 连接
@@ -74,10 +82,8 @@ class LlamaCppProvider : public LLMProvider {
   ~LlamaCppProvider() override;
 
   bool LoadConfig(const std::string& config_name) override;
-  std::vector<std::wstring> PredictCandidates(const std::wstring& context,
-                                              const std::wstring& current_input,
-                                              size_t max_candidates,
-                                              const std::wstring& preference_hint = L"") override;
+  std::vector<std::wstring> ExecuteRequest(
+      const LLMRequest& request) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "llama.cpp Local"; }
 
@@ -123,23 +129,21 @@ class LlamaCppProvider : public LLMProvider {
 };
 
 // HF Constraint 接口提供者（/v1/generate/completions）
-// 请求体: {"prompt": "历史上下文", "pinyin_constraints": ["当前输入"]}
+// 统一请求会转换为 {"prompt": "...", "pinyin_constraints": [...]} 形式
 class HFConstraintProvider : public LLMProvider {
  public:
   HFConstraintProvider();
   ~HFConstraintProvider() override;
   bool LoadConfig(const std::string& config_name) override;
-  std::vector<std::wstring> PredictCandidates(const std::wstring& context,
-                                              const std::wstring& current_input,
-                                              size_t max_candidates,
-                                              const std::wstring& preference_hint = L"") override;
+  std::vector<std::wstring> ExecuteRequest(
+      const LLMRequest& request) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "HF Constraint"; }
 
  private:
-  bool ExecuteRequest(const std::string& url,
-                      const std::string& request_body,
-                      std::string& response_body);
+  bool ExecuteHttpRequest(const std::string& url,
+                          const std::string& request_body,
+                          std::string& response_body);
   std::vector<std::wstring> ParseResponse(const std::string& json_response);
   void CloseConnection();  // 关闭并清空复用的 HTTP 连接
 

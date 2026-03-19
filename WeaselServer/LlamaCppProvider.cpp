@@ -10,6 +10,170 @@
 // 包含 llama.cpp 头文件
 #include "llama.h"
 
+namespace {
+
+bool IsExecutableRequest(const LLMRequest& request) {
+  switch (request.type) {
+    case LLMRequestType::NoInputPrediction:
+      return !request.context.empty() || !request.preference_hint.empty();
+    case LLMRequestType::PinyinConstrainedPrediction:
+      return !request.current_input.empty();
+    case LLMRequestType::RimeReorder:
+      return !request.rime_candidates.empty();
+  }
+  return false;
+}
+
+std::wstring GetRequestTypeName(LLMRequestType type) {
+  switch (type) {
+    case LLMRequestType::NoInputPrediction:
+      return L"无输入预测";
+    case LLMRequestType::PinyinConstrainedPrediction:
+      return L"拼音约束预测";
+    case LLMRequestType::RimeReorder:
+      return L"Rime 重排";
+  }
+  return L"未知请求";
+}
+
+std::wstring JoinCandidatesForPrompt(
+    const std::vector<std::wstring>& candidates) {
+  std::wstring joined;
+  for (size_t i = 0; i < candidates.size(); ++i) {
+    if (i > 0) {
+      joined += L"\n";
+    }
+    joined += std::to_wstring(i + 1) + L". \"" + candidates[i] + L"\"";
+  }
+  return joined;
+}
+
+void BuildInstructPrompts(const LLMRequest& request,
+                          std::wstring& system_prompt,
+                          std::wstring& user_prompt) {
+  const size_t output_limit = (std::min)(
+      request.max_candidates,
+      request.type == LLMRequestType::RimeReorder ? request.rime_candidates.size()
+                                                  : request.max_candidates);
+
+  switch (request.type) {
+    case LLMRequestType::NoInputPrediction:
+      system_prompt =
+          L"你是一个智能中文输入法，请根据上下文预测接下来最可能出现的"
+          + std::to_wstring(request.max_candidates) + L"个候选词。\n\n"
+          L"要求：\n"
+          L"1. 只返回候选词，不要任何解释或标点\n"
+          L"2. 候选词之间用单个空格分隔\n"
+          L"3. 按可能性从高到低排列\n"
+          L"4. 确保候选词都是有效的中文词汇或常用短语\n"
+          L"5. 返回词数严格不超过"
+          + std::to_wstring(request.max_candidates) + L"个\n";
+      if (!request.preference_hint.empty()) {
+        system_prompt +=
+            L"6. 用户偏好只作弱参考，必须优先保证与最近上下文的连贯性\n"
+            L"7. 若用户偏好与当前上下文冲突，忽略用户偏好，以当前上下文为准\n";
+      }
+      user_prompt = L"上下文：\"" + request.context + L"\"\n";
+      if (!request.preference_hint.empty()) {
+        user_prompt +=
+            L"用户偏好（弱参考，可忽略）：\"" + request.preference_hint + L"\"\n";
+      }
+      user_prompt += L"候选词：";
+      return;
+    case LLMRequestType::PinyinConstrainedPrediction:
+      system_prompt =
+          L"你是一个智能中文输入法，请根据上下文和当前拼音，预测接下来最可能出现的"
+          + std::to_wstring(request.max_candidates) + L"个候选词。\n\n"
+          L"要求：\n"
+          L"1. 只返回候选词，不要任何解释或标点\n"
+          L"2. 候选词之间用单个空格分隔\n"
+          L"3. 按可能性从高到低排列\n"
+          L"4. 每个候选词都必须严格匹配当前拼音约束\n"
+          L"5. 如果上下文为空或无关，也必须优先满足拼音约束\n"
+          L"6. 确保候选词都是有效的中文词汇或常用短语\n"
+          L"7. 返回词数严格不超过"
+          + std::to_wstring(request.max_candidates) + L"个\n";
+      if (!request.preference_hint.empty()) {
+        system_prompt +=
+            L"8. 用户偏好只作弱参考，必须优先保证与最近上下文和当前拼音的连贯性\n"
+            L"9. 若用户偏好与当前上下文冲突，忽略用户偏好，以当前上下文为准\n";
+      }
+      user_prompt = L"上下文：\"" + request.context + L"\"\n";
+      if (!request.preference_hint.empty()) {
+        user_prompt +=
+            L"用户偏好（弱参考，可忽略）：\"" + request.preference_hint + L"\"\n";
+      }
+      user_prompt +=
+          L"当前拼音：\"" + request.current_input + L"\"\n候选词：";
+      return;
+    case LLMRequestType::RimeReorder:
+      system_prompt =
+          L"你是一个智能中文输入法，请根据上下文、当前拼音和用户偏好，对给定的 Rime 候选词重新排序。\n\n"
+          L"要求：\n"
+          L"1. 只能从给定候选列表中选择，不得新增、改写或拆分候选词\n"
+          L"2. 只返回重排后的候选词，不要解释、编号或标点\n"
+          L"3. 候选词之间用单个空格分隔\n"
+          L"4. 按更符合上下文的顺序输出\n"
+          L"5. 若无法判断，尽量保持原顺序\n"
+          L"6. 返回词数严格不超过"
+          + std::to_wstring(output_limit) + L"个\n";
+      user_prompt = L"上下文：\"" + request.context + L"\"\n";
+      if (!request.preference_hint.empty()) {
+        user_prompt +=
+            L"用户偏好（弱参考，可忽略）：\"" + request.preference_hint + L"\"\n";
+      }
+      if (!request.current_input.empty()) {
+        user_prompt += L"当前拼音：\"" + request.current_input + L"\"\n";
+      }
+      user_prompt +=
+          L"Rime 候选词：\n" + JoinCandidatesForPrompt(request.rime_candidates)
+          + L"\n重排结果：";
+      return;
+  }
+}
+
+std::wstring BuildBasePrompt(const LLMRequest& request) {
+  switch (request.type) {
+    case LLMRequestType::NoInputPrediction:
+      if (!request.context.empty()) {
+        return request.context;
+      }
+      return request.preference_hint;
+    case LLMRequestType::PinyinConstrainedPrediction: {
+      std::wstring prompt = request.context;
+      if (prompt.empty() && !request.preference_hint.empty()) {
+        prompt = request.preference_hint;
+      }
+      prompt += request.current_input;
+      return prompt;
+    }
+    case LLMRequestType::RimeReorder: {
+      const size_t output_limit = (std::min)(
+          request.max_candidates, request.rime_candidates.size());
+      std::wstring prompt =
+          L"请根据以下上下文、当前拼音和用户偏好，对给定的 Rime 候选词重新排序。\n"
+          L"只能从给定候选列表中选择，不得新增候选词；只返回重排后的前"
+          + std::to_wstring(output_limit)
+          + L"个候选词，使用空格分隔，不要解释。\n";
+      prompt += L"上下文：\"" + request.context + L"\"\n";
+      if (!request.preference_hint.empty()) {
+        prompt +=
+            L"用户偏好（弱参考，可忽略）：\"" + request.preference_hint + L"\"\n";
+      }
+      if (!request.current_input.empty()) {
+        prompt += L"当前拼音：\"" + request.current_input + L"\"\n";
+      }
+      prompt +=
+          L"Rime 候选词：\n" + JoinCandidatesForPrompt(request.rime_candidates)
+          + L"\n重排结果：";
+      return prompt;
+    }
+  }
+  return std::wstring();
+}
+
+}  // namespace
+
 LlamaCppProvider::LlamaCppProvider()
     : m_enabled(false),
       m_n_ctx(2048),
@@ -845,14 +1009,11 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
   return candidates;
 }
 
-std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
-    const std::wstring& context,
-    const std::wstring& current_input,
-    size_t max_candidates,
-    const std::wstring& preference_hint) {
+std::vector<std::wstring> LlamaCppProvider::ExecuteRequest(
+    const LLMRequest& request) {
   std::vector<std::wstring> candidates;
 
-  if (!IsAvailable() || (context.empty() && preference_hint.empty())) {
+  if (!IsAvailable() || !IsExecutableRequest(request)) {
     return candidates;
   }
 
@@ -869,54 +1030,46 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
   std::string prompt_utf8;
 
   if (m_instruct_model) {
-    // Instruct 模型：使用指令式 system + user prompt
-    std::wstring system_prompt = L"你是一个智能中文输入法，请根据以下上下文和当前输入，预测接下来最可能出现的" +
-                                 std::to_wstring(max_candidates) + L"个候选词。\n\n"
-                                 L"要求：\n"
-                                 L"1. 只返回候选词，不要任何解释或标点\n"
-                                 L"2. 候选词之间用单个空格分隔\n"
-                                 L"3. 按可能性从高到低排列\n"
-                                 L"4. 如果上下文为空或无关，仅基于当前输入预测\n"
-                                 L"5. 确保候选词都是有效的中文词汇或常用短语\n"
-                                 L"6. 返回词数严格不超过" + std::to_wstring(max_candidates) + L"个\n";
-    if (!preference_hint.empty()) {
-      system_prompt +=
-          L"7. 优先贴近“用户偏好”里的常用词和表达习惯，但不要违背当前上下文和当前输入\n";
+    std::wstring system_prompt;
+    std::wstring user_prompt;
+    BuildInstructPrompts(request, system_prompt, user_prompt);
+    if (system_prompt.empty() || user_prompt.empty()) {
+      return candidates;
     }
     system_prompt += L"\n";
-    std::wstring user_prompt = L"上下文：\"" + context + L"\"\n"
-                               + (!preference_hint.empty()
-                                      ? (L"用户偏好：\"" + preference_hint + L"\"\n")
-                                      : L"")
-                               + L"当前输入：\"" + current_input + L"\"\n"
-                               L"候选词：";
     system_prompt_utf8 = wtou8(system_prompt);
     prompt_utf8 = wtou8(user_prompt);
   } else {
-    // Base 模型：直接使用 context + current_input 作为补全前缀，无额外指令
-    std::wstring context_prefix = context;
-    if (!preference_hint.empty()) {
-      context_prefix += L" " + preference_hint;
+    std::wstring context_prefix = BuildBasePrompt(request);
+    if (context_prefix.empty()) {
+      return candidates;
     }
-    context_prefix += current_input;
     system_prompt_utf8.clear();
     prompt_utf8 = wtou8(context_prefix);
   }
 
   extern DevConsole* g_dev_console;
   if (g_dev_console && g_dev_console->IsEnabled()) {
-    g_dev_console->WriteLine(L"[LLM] 发送预测请求 (llama.cpp)");
-    g_dev_console->WriteLine(L"  上下文: " + context);
-    if (!preference_hint.empty()) {
-      g_dev_console->WriteLine(L"  用户偏好: " + preference_hint);
+    g_dev_console->WriteLine(L"[LLM] 发送请求 (llama.cpp)");
+    g_dev_console->WriteLine(L"  请求类型: " + GetRequestTypeName(request.type));
+    g_dev_console->WriteLine(L"  上下文: " + request.context);
+    if (!request.preference_hint.empty()) {
+      g_dev_console->WriteLine(L"  用户偏好: " + request.preference_hint);
     }
-    g_dev_console->WriteLine(L"  当前输入: " + current_input);
+    if (!request.current_input.empty()) {
+      g_dev_console->WriteLine(L"  当前输入: " + request.current_input);
+    }
+    if (!request.rime_candidates.empty()) {
+      g_dev_console->WriteLine(
+          L"  Rime候选数: " + std::to_wstring(request.rime_candidates.size()));
+    }
   }
 
   // 当需要多个候选时，使用批量采样（与单次生成一样复用 system KV cache）
-  if (max_candidates > 1) {
+  if (request.max_candidates > 1) {
     ULONGLONG start_time = GetTickCount64();
-    std::vector<std::string> raw = GenerateCandidatesBatch(system_prompt_utf8, prompt_utf8, max_candidates, 4);
+    std::vector<std::string> raw = GenerateCandidatesBatch(
+        system_prompt_utf8, prompt_utf8, request.max_candidates, 4);
     ULONGLONG elapsed_ms = GetTickCount64() - start_time;
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(L"[LLM] 批量采样完成，耗时: " + std::to_wstring(elapsed_ms) + L" ms");
@@ -958,7 +1111,7 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
   std::wstring response_w = u8tow(response);
   std::wstringstream ss(response_w);
   std::wstring word;
-  while (ss >> word && candidates.size() < max_candidates) {
+  while (ss >> word && candidates.size() < request.max_candidates) {
     if (!word.empty()) {
       candidates.push_back(word);
     }

@@ -5,6 +5,8 @@
 #include <WeaselUtility.h>
 #include <rime_api.h>
 #include <winhttp.h>
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 #include <sstream>
 #include <algorithm>
 #include <cctype>
@@ -45,6 +47,147 @@ std::string StripJsonObjectBraces(const std::string& json_object) {
     return std::string();
   }
   return json_object.substr(1, json_object.size() - 2);
+}
+
+bool FindFirstStringFieldByName(const boost::property_tree::ptree& node,
+                                const char* field_name,
+                                std::string& value) {
+  for (const auto& child : node) {
+    if (child.first == field_name) {
+      const std::string field_value = child.second.get_value<std::string>();
+      if (!field_value.empty()) {
+        value = field_value;
+        return true;
+      }
+    }
+
+    if (FindFirstStringFieldByName(child.second, field_name, value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool IsExecutableRequest(const LLMRequest& request) {
+  switch (request.type) {
+    case LLMRequestType::NoInputPrediction:
+      return !request.context.empty() || !request.preference_hint.empty();
+    case LLMRequestType::PinyinConstrainedPrediction:
+      return !request.current_input.empty();
+    case LLMRequestType::RimeReorder:
+      return !request.rime_candidates.empty();
+  }
+  return false;
+}
+
+std::wstring GetRequestTypeName(LLMRequestType type) {
+  switch (type) {
+    case LLMRequestType::NoInputPrediction:
+      return L"无输入预测";
+    case LLMRequestType::PinyinConstrainedPrediction:
+      return L"拼音约束预测";
+    case LLMRequestType::RimeReorder:
+      return L"Rime 重排";
+  }
+  return L"未知请求";
+}
+
+std::wstring JoinCandidatesForPrompt(
+    const std::vector<std::wstring>& candidates) {
+  std::wstring joined;
+  for (size_t i = 0; i < candidates.size(); ++i) {
+    if (i > 0) {
+      joined += L"\n";
+    }
+    joined += std::to_wstring(i + 1) + L". \"" + candidates[i] + L"\"";
+  }
+  return joined;
+}
+
+std::wstring BuildOpenAIPrompt(const LLMRequest& request) {
+  const size_t output_limit = (std::min)(
+      request.max_candidates,
+      request.type == LLMRequestType::RimeReorder ? request.rime_candidates.size()
+                                                  : request.max_candidates);
+
+  switch (request.type) {
+    case LLMRequestType::NoInputPrediction: {
+      std::wstring prompt =
+          L"你是一个智能中文输入法，请根据以下上下文预测接下来最可能出现的"
+          + std::to_wstring(request.max_candidates) + L"个候选词。\n\n"
+          L"要求：\n"
+          L"1. 只返回候选词，不要任何解释或标点\n"
+          L"2. 候选词之间用单个空格分隔\n"
+          L"3. 按可能性从高到低排列\n"
+          L"4. 确保候选词都是有效的中文词汇或常用短语\n"
+          L"5. 返回词数严格不超过"
+          + std::to_wstring(request.max_candidates) + L"个\n";
+      if (!request.preference_hint.empty()) {
+        prompt +=
+            L"6. 用户偏好只作弱参考，必须优先保证与最近上下文的连贯性\n"
+            L"7. 若用户偏好与当前上下文冲突，忽略用户偏好，以当前上下文为准\n";
+      }
+      prompt += L"\n上下文：\"" + request.context + L"\"\n";
+      if (!request.preference_hint.empty()) {
+        prompt +=
+            L"用户偏好（弱参考，可忽略）：\"" + request.preference_hint + L"\"\n";
+      }
+      prompt += L"候选词：";
+      return prompt;
+    }
+    case LLMRequestType::PinyinConstrainedPrediction: {
+      std::wstring prompt =
+          L"你是一个智能中文输入法，请根据以下上下文和当前拼音，预测接下来最可能出现的"
+          + std::to_wstring(request.max_candidates) + L"个候选词。\n\n"
+          L"要求：\n"
+          L"1. 只返回候选词，不要任何解释或标点\n"
+          L"2. 候选词之间用单个空格分隔\n"
+          L"3. 按可能性从高到低排列\n"
+          L"4. 每个候选词都必须严格匹配当前拼音约束\n"
+          L"5. 如果上下文为空或无关，也必须优先满足拼音约束\n"
+          L"6. 确保候选词都是有效的中文词汇或常用短语\n"
+          L"7. 返回词数严格不超过"
+          + std::to_wstring(request.max_candidates) + L"个\n";
+      if (!request.preference_hint.empty()) {
+        prompt +=
+            L"8. 用户偏好只作弱参考，必须优先保证与最近上下文和当前拼音的连贯性\n"
+            L"9. 若用户偏好与当前上下文冲突，忽略用户偏好，以当前上下文为准\n";
+      }
+      prompt += L"\n上下文：\"" + request.context + L"\"\n";
+      if (!request.preference_hint.empty()) {
+        prompt +=
+            L"用户偏好（弱参考，可忽略）：\"" + request.preference_hint + L"\"\n";
+      }
+      prompt += L"当前拼音：\"" + request.current_input + L"\"\n"
+                L"候选词：";
+      return prompt;
+    }
+    case LLMRequestType::RimeReorder: {
+      std::wstring prompt =
+          L"你是一个智能中文输入法，请根据以下上下文、当前拼音和用户偏好，对给定的 Rime 候选词重新排序。\n\n"
+          L"要求：\n"
+          L"1. 只能从给定候选列表中选择，不得新增、改写或拆分候选词\n"
+          L"2. 只返回重排后的候选词，不要解释、编号或标点\n"
+          L"3. 候选词之间用单个空格分隔\n"
+          L"4. 按更符合上下文的顺序输出\n"
+          L"5. 若无法判断，尽量保持原顺序\n"
+          L"6. 返回词数严格不超过"
+          + std::to_wstring(output_limit) + L"个\n";
+      prompt += L"\n上下文：\"" + request.context + L"\"\n";
+      if (!request.preference_hint.empty()) {
+        prompt +=
+            L"用户偏好（弱参考，可忽略）：\"" + request.preference_hint + L"\"\n";
+      }
+      if (!request.current_input.empty()) {
+        prompt += L"当前拼音：\"" + request.current_input + L"\"\n";
+      }
+      prompt += L"Rime 候选词：\n" + JoinCandidatesForPrompt(request.rime_candidates)
+                + L"\n重排结果：";
+      return prompt;
+    }
+  }
+  return std::wstring();
 }
 
 }  // namespace
@@ -322,45 +465,18 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
   return true;
 }
 
-std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
-    const std::wstring& context,
-    const std::wstring& current_input,
-    size_t max_candidates,
-    const std::wstring& preference_hint) {
+std::vector<std::wstring> OpenAICompatibleProvider::ExecuteRequest(
+    const LLMRequest& request) {
   std::vector<std::wstring> candidates;
 
-  if (!IsAvailable() || (context.empty() && preference_hint.empty())) {
+  if (!IsAvailable() || !IsExecutableRequest(request)) {
     return candidates;
   }
 
-  // 构建prompt
-  std::wstring prompt =
-      L"你是一个智能中文输入法，请根据以下上下文和当前输入，预测接下来最可能出"
-      L"现的" +
-      std::to_wstring(max_candidates) +
-      L"个候选词。\n\n"
-      L"要求：\n"
-      L"1. 只返回候选词，不要任何解释或标点\n"
-      L"2. 候选词之间用单个空格分隔\n"
-      L"3. 按可能性从高到低排列\n"
-      L"4. 如果上下文为空或无关，仅基于当前输入预测\n"
-      L"5. 确保候选词都是有效的中文词汇或常用短语\n"
-      L"6. 返回词数严格不超过" +
-      std::to_wstring(max_candidates) +
-      L"个\n";
-  if (!preference_hint.empty()) {
-    prompt +=
-        L"7. 优先贴近“用户偏好”里的常用词和表达习惯，但不要违背当前上下文和当前输入\n";
+  const std::wstring prompt = BuildOpenAIPrompt(request);
+  if (prompt.empty()) {
+    return candidates;
   }
-  prompt += L"\n"
-      L"上下文：\"" +
-      context +
-      L"\"\n";
-  if (!preference_hint.empty()) {
-    prompt += L"用户偏好：\"" + preference_hint + L"\"\n";
-  }
-  prompt += L"当前输入：\"" + current_input + L"\"\n"
-            L"候选词：";
 
   // 构建JSON请求体
   std::string prompt_utf8 = wtou8(prompt);
@@ -387,10 +503,18 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
   // 输出请求内容到开发终端
   extern DevConsole* g_dev_console;
   if (g_dev_console && g_dev_console->IsEnabled()) {
-    g_dev_console->WriteLine(L"[LLM] 发送预测请求");
-    g_dev_console->WriteLine(L"  上下文: " + context);
-    if (!preference_hint.empty()) {
-      g_dev_console->WriteLine(L"  用户偏好: " + preference_hint);
+    g_dev_console->WriteLine(L"[LLM] 发送请求（OpenAI Compatible）");
+    g_dev_console->WriteLine(L"  请求类型: " + GetRequestTypeName(request.type));
+    g_dev_console->WriteLine(L"  上下文: " + request.context);
+    if (!request.preference_hint.empty()) {
+      g_dev_console->WriteLine(L"  用户偏好: " + request.preference_hint);
+    }
+    if (!request.current_input.empty()) {
+      g_dev_console->WriteLine(L"  当前输入: " + request.current_input);
+    }
+    if (!request.rime_candidates.empty()) {
+      g_dev_console->WriteLine(
+          L"  Rime候选数: " + std::to_wstring(request.rime_candidates.size()));
     }
     g_dev_console->WriteLine(L"  请求URL: " + u8tow(m_api_url));
     g_dev_console->WriteLine(L"  请求体: " + u8tow(request_body));
@@ -398,7 +522,7 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
 
   // 执行HTTP请求
   std::string response_body;
-  if (!ExecuteRequest(m_api_url, request_body, response_body)) {
+  if (!ExecuteHttpRequest(m_api_url, request_body, response_body)) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(L"[LLM] 请求失败");
     }
@@ -433,9 +557,10 @@ bool OpenAICompatibleProvider::IsAvailable() const {
   return m_enabled && !m_api_url.empty();
 }
 
-bool OpenAICompatibleProvider::ExecuteRequest(const std::string& url,
-                                              const std::string& request_body,
-                                              std::string& response_body) {
+bool OpenAICompatibleProvider::ExecuteHttpRequest(
+    const std::string& url,
+    const std::string& request_body,
+    std::string& response_body) {
   URL_COMPONENTS url_comp = {0};
   url_comp.dwStructSize = sizeof(URL_COMPONENTS);
   url_comp.dwSchemeLength = (DWORD)-1;
@@ -546,30 +671,27 @@ std::vector<std::wstring> OpenAICompatibleProvider::ParseResponse(
     const std::string& json_response) {
   std::vector<std::wstring> candidates;
 
-  // 简单的JSON解析（查找content字段）
-  // 实际应该使用JSON库，这里简化处理
-  size_t content_pos = json_response.find("\"content\"");
-  if (content_pos == std::string::npos) {
+  std::string content;
+  try {
+    boost::property_tree::ptree root;
+    std::istringstream json_stream(json_response);
+    boost::property_tree::read_json(json_stream, root);
+
+    const char* field_names[] = {"content", "text", "generated_text",
+                                 "responses"};
+    for (const char* field_name : field_names) {
+      if (FindFirstStringFieldByName(root, field_name, content)) {
+        break;
+      }
+    }
+  } catch (const boost::property_tree::json_parser_error&) {
     return candidates;
   }
 
-  size_t colon_pos = json_response.find(':', content_pos);
-  if (colon_pos == std::string::npos) {
+  if (content.empty()) {
     return candidates;
   }
 
-  size_t quote_start = json_response.find('"', colon_pos);
-  if (quote_start == std::string::npos) {
-    return candidates;
-  }
-
-  size_t quote_end = json_response.find('"', quote_start + 1);
-  if (quote_end == std::string::npos) {
-    return candidates;
-  }
-
-  std::string content =
-      json_response.substr(quote_start + 1, quote_end - quote_start - 1);
   std::wstring content_w = u8tow(content);
 
   // 按空格分割
