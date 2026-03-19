@@ -14,6 +14,306 @@
 
 namespace {
 
+void SkipJsonWhitespace(const std::string& text, size_t& pos) {
+  while (pos < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[pos]))) {
+    ++pos;
+  }
+}
+
+void AppendUtf8CodePoint(std::string& output, uint32_t codepoint) {
+  if (codepoint <= 0x7F) {
+    output.push_back(static_cast<char>(codepoint));
+  } else if (codepoint <= 0x7FF) {
+    output.push_back(static_cast<char>(0xC0 | (codepoint >> 6)));
+    output.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+  } else if (codepoint <= 0xFFFF) {
+    output.push_back(static_cast<char>(0xE0 | (codepoint >> 12)));
+    output.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
+    output.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+  } else {
+    output.push_back(static_cast<char>(0xF0 | (codepoint >> 18)));
+    output.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F)));
+    output.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
+    output.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+  }
+}
+
+bool ParseJsonStringLiteral(const std::string& text,
+                            size_t quote_pos,
+                            std::string& value,
+                            size_t* next_pos = nullptr) {
+  if (quote_pos >= text.size() || text[quote_pos] != '"') {
+    return false;
+  }
+
+  value.clear();
+  for (size_t i = quote_pos + 1; i < text.size(); ++i) {
+    const char ch = text[i];
+    if (ch == '"') {
+      if (next_pos) {
+        *next_pos = i + 1;
+      }
+      return true;
+    }
+    if (ch != '\\') {
+      value.push_back(ch);
+      continue;
+    }
+
+    if (++i >= text.size()) {
+      return false;
+    }
+
+    switch (text[i]) {
+      case '"':
+      case '\\':
+      case '/':
+        value.push_back(text[i]);
+        break;
+      case 'b':
+        value.push_back('\b');
+        break;
+      case 'f':
+        value.push_back('\f');
+        break;
+      case 'n':
+        value.push_back('\n');
+        break;
+      case 'r':
+        value.push_back('\r');
+        break;
+      case 't':
+        value.push_back('\t');
+        break;
+      case 'u': {
+        if (i + 4 >= text.size()) {
+          return false;
+        }
+        uint32_t codepoint = 0;
+        for (size_t hex_pos = i + 1; hex_pos <= i + 4; ++hex_pos) {
+          codepoint <<= 4;
+          const unsigned char hex_char = static_cast<unsigned char>(text[hex_pos]);
+          if (hex_char >= '0' && hex_char <= '9') {
+            codepoint |= (hex_char - '0');
+          } else if (hex_char >= 'a' && hex_char <= 'f') {
+            codepoint |= (hex_char - 'a' + 10);
+          } else if (hex_char >= 'A' && hex_char <= 'F') {
+            codepoint |= (hex_char - 'A' + 10);
+          } else {
+            return false;
+          }
+        }
+        AppendUtf8CodePoint(value, codepoint);
+        i += 4;
+        break;
+      }
+      default:
+        value.push_back(text[i]);
+        break;
+    }
+  }
+
+  return false;
+}
+
+bool ExtractJsonStringField(const std::string& json,
+                            const std::string& field_name,
+                            std::string& value) {
+  const std::string key = "\"" + field_name + "\"";
+  size_t key_pos = json.find(key);
+  while (key_pos != std::string::npos) {
+    size_t pos = key_pos + key.size();
+    SkipJsonWhitespace(json, pos);
+    if (pos >= json.size() || json[pos] != ':') {
+      key_pos = json.find(key, key_pos + key.size());
+      continue;
+    }
+    ++pos;
+    SkipJsonWhitespace(json, pos);
+    if (pos >= json.size() || json[pos] != '"') {
+      key_pos = json.find(key, key_pos + key.size());
+      continue;
+    }
+    return ParseJsonStringLiteral(json, pos, value);
+  }
+  return false;
+}
+
+bool ParseJsonStringArray(const std::string& json,
+                          size_t array_pos,
+                          std::vector<std::string>& values) {
+  values.clear();
+  if (array_pos >= json.size() || json[array_pos] != '[') {
+    return false;
+  }
+
+  size_t pos = array_pos + 1;
+  while (pos < json.size()) {
+    SkipJsonWhitespace(json, pos);
+    if (pos >= json.size()) {
+      return false;
+    }
+    if (json[pos] == ']') {
+      return true;
+    }
+    if (json[pos] != '"') {
+      return false;
+    }
+
+    std::string item;
+    if (!ParseJsonStringLiteral(json, pos, item, &pos)) {
+      return false;
+    }
+    values.push_back(item);
+
+    SkipJsonWhitespace(json, pos);
+    if (pos >= json.size()) {
+      return false;
+    }
+    if (json[pos] == ',') {
+      ++pos;
+      continue;
+    }
+    if (json[pos] == ']') {
+      return true;
+    }
+    return false;
+  }
+
+  return false;
+}
+
+std::string TrimAsciiWhitespace(const std::string& text) {
+  size_t begin = 0;
+  while (begin < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[begin]))) {
+    ++begin;
+  }
+
+  size_t end = text.size();
+  while (end > begin &&
+         std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+    --end;
+  }
+
+  return text.substr(begin, end - begin);
+}
+
+std::string StripMarkdownCodeFence(const std::string& text) {
+  const std::string trimmed = TrimAsciiWhitespace(text);
+  if (trimmed.rfind("```", 0) != 0) {
+    return trimmed;
+  }
+
+  const size_t first_newline = trimmed.find('\n');
+  if (first_newline == std::string::npos) {
+    return trimmed;
+  }
+  const size_t fence_end = trimmed.rfind("```");
+  if (fence_end == std::string::npos || fence_end <= first_newline) {
+    return trimmed;
+  }
+  return TrimAsciiWhitespace(
+      trimmed.substr(first_newline + 1, fence_end - first_newline - 1));
+}
+
+std::vector<std::wstring> ParsePlainTextCandidates(const std::string& content) {
+  std::vector<std::wstring> candidates;
+  std::wstring content_w = u8tow(content);
+  std::wstringstream ss(content_w);
+  std::wstring word;
+  while (ss >> word) {
+    if (!word.empty()) {
+      candidates.push_back(word);
+    }
+  }
+  return candidates;
+}
+
+std::vector<std::wstring> ParseStructuredCandidates(const std::string& content) {
+  std::vector<std::wstring> candidates;
+  const std::string trimmed = StripMarkdownCodeFence(content);
+  if (trimmed.empty()) {
+    return candidates;
+  }
+
+  auto append_candidates = [&candidates](const std::vector<std::string>& items) {
+    for (const auto& item : items) {
+      if (!item.empty()) {
+        candidates.push_back(u8tow(item));
+      }
+    }
+  };
+
+  std::string normalized = trimmed;
+  const size_t object_begin = trimmed.find('{');
+  const size_t object_end = trimmed.rfind('}');
+  if (object_begin != std::string::npos && object_end != std::string::npos &&
+      object_begin < object_end) {
+    normalized = trimmed.substr(object_begin, object_end - object_begin + 1);
+  }
+
+  std::vector<std::string> items;
+  if (normalized.front() == '[' && ParseJsonStringArray(normalized, 0, items)) {
+    append_candidates(items);
+    return candidates;
+  }
+
+  const std::string key = "\"candidates\"";
+  size_t key_pos = normalized.find(key);
+  if (key_pos != std::string::npos) {
+    size_t array_pos = normalized.find('[', key_pos + key.size());
+    if (array_pos != std::string::npos &&
+        ParseJsonStringArray(normalized, array_pos, items)) {
+      append_candidates(items);
+      return candidates;
+    }
+  }
+
+  return candidates;
+}
+
+std::wstring BuildLegacyPredictionPrompt(const std::wstring& context,
+                                         const std::wstring& current_input,
+                                         size_t max_candidates) {
+  return L"你是一个智能中文输入法，请根据以下上下文和当前输入，预测接下来最可能出"
+         L"现的" +
+         std::to_wstring(max_candidates) +
+         L"个候选词。\n\n"
+         L"要求：\n"
+         L"1. 只返回候选词，不要任何解释或标点\n"
+         L"2. 候选词之间用单个空格分隔\n"
+         L"3. 按可能性从高到低排列\n"
+         L"4. 如果上下文为空或无关，仅基于当前输入预测\n"
+         L"5. 确保候选词都是有效的中文词汇或常用短语\n"
+         L"6. 返回词数严格不超过" +
+         std::to_wstring(max_candidates) +
+         L"个\n\n"
+         L"上下文：\"" + context + L"\"\n"
+         L"当前输入：\"" + current_input + L"\"\n"
+         L"候选词：";
+}
+
+std::wstring BuildJsonPredictionPrompt(const std::wstring& context,
+                                       const std::wstring& current_input,
+                                       size_t max_candidates) {
+  return L"你是一个智能中文输入法，请根据以下上下文和当前输入预测候选词。\n\n"
+         L"请仅返回一个 JSON 对象，不要输出 Markdown 代码块，不要输出额外解释。\n"
+         L"JSON 格式必须是：{\"candidates\":[\"候选1\",\"候选2\"]}\n"
+         L"要求：\n"
+         L"1. key 必须为 candidates\n"
+         L"2. candidates 必须是字符串数组\n"
+         L"3. 候选词按可能性从高到低排列\n"
+         L"4. candidates 数量严格不超过" +
+         std::to_wstring(max_candidates) +
+         L"\n"
+         L"5. 每个候选词都必须是有效的中文词汇或常用短语\n"
+         L"6. 如果上下文为空或无关，仅基于当前输入预测\n\n"
+         L"上下文：\"" + context + L"\"\n"
+         L"当前输入：\"" + current_input + L"\"";
+}
+
 bool HeaderNameEquals(const std::string& lhs, const char* rhs) {
   if (!rhs || lhs.size() != strlen(rhs)) {
     return false;
@@ -53,6 +353,7 @@ OpenAICompatibleProvider::OpenAICompatibleProvider()
     : m_enabled(false),
       m_max_tokens(10),
       m_temperature(0.7),
+      m_has_custom_response_format(false),
       m_hSession(nullptr),
       m_hConnect(nullptr) {}
 
@@ -90,6 +391,7 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
     m_model = "qwen3:8b";
     m_max_tokens = 10;
     m_temperature = 0.7;
+    m_has_custom_response_format = false;
     m_extra_body_json.clear();
     m_extra_headers.clear();
 
@@ -294,6 +596,12 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
     }
   }
 
+  std::string response_format_json;
+  m_has_custom_response_format =
+      weasel::config_json::SerializeConfigValueToJson(
+          rime_api, &config, "llm/openai/extra_body/response_format",
+          response_format_json);
+
   m_extra_headers.clear();
   if (weasel::config_json::LoadConfigStringMap(
           rime_api, &config, "llm/openai/extra_headers", m_extra_headers)) {
@@ -331,78 +639,71 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
   if (!IsAvailable() || context.empty()) {
     return candidates;
   }
-
-  // 构建prompt
-  std::wstring prompt =
-      L"你是一个智能中文输入法，请根据以下上下文和当前输入，预测接下来最可能出"
-      L"现的" +
-      std::to_wstring(max_candidates) +
-      L"个候选词。\n\n"
-      L"要求：\n"
-      L"1. 只返回候选词，不要任何解释或标点\n"
-      L"2. 候选词之间用单个空格分隔\n"
-      L"3. 按可能性从高到低排列\n"
-      L"4. 如果上下文为空或无关，仅基于当前输入预测\n"
-      L"5. 确保候选词都是有效的中文词汇或常用短语\n"
-      L"6. 返回词数严格不超过" +
-      std::to_wstring(max_candidates) +
-      L"个\n\n"
-      L"上下文：\"" +
-      context +
-      L"\"\n"
-      L"当前输入：\"" +
-      current_input +
-      L"\"\n"
-      L"候选词：";
-
-  // 构建JSON请求体
-  std::string prompt_utf8 = wtou8(prompt);
-  std::string escaped_prompt =
-      weasel::config_json::EscapeJsonString(prompt_utf8);
-  std::string extra_body_members = StripJsonObjectBraces(m_extra_body_json);
-
-  std::ostringstream json;
-  json << "{"
-       << "\"model\":\"" << weasel::config_json::EscapeJsonString(m_model)
-       << "\","
-       << "\"messages\":["
-       << "{\"role\":\"user\",\"content\":\"" << escaped_prompt << "\"}"
-       << "],"
-       << "\"max_tokens\":" << m_max_tokens << ","
-       << "\"temperature\":" << m_temperature;
-  if (!extra_body_members.empty()) {
-    json << "," << extra_body_members;
-  }
-  json << "}";
-
-  std::string request_body = json.str();
-
-  // 输出请求内容到开发终端
   extern DevConsole* g_dev_console;
-  if (g_dev_console && g_dev_console->IsEnabled()) {
-    g_dev_console->WriteLine(L"[LLM] 发送预测请求");
-    g_dev_console->WriteLine(L"  上下文: " + context);
-    g_dev_console->WriteLine(L"  请求URL: " + u8tow(m_api_url));
-    g_dev_console->WriteLine(L"  请求体: " + u8tow(request_body));
-  }
+  auto send_request = [&](bool use_json_output) -> std::vector<std::wstring> {
+    const std::wstring prompt =
+        use_json_output
+            ? BuildJsonPredictionPrompt(context, current_input, max_candidates)
+            : BuildLegacyPredictionPrompt(context, current_input, max_candidates);
 
-  // 执行HTTP请求
-  std::string response_body;
-  if (!ExecuteRequest(m_api_url, request_body, response_body)) {
-    if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] 请求失败");
+    const std::string prompt_utf8 = wtou8(prompt);
+    const std::string escaped_prompt =
+        weasel::config_json::EscapeJsonString(prompt_utf8);
+    const std::string extra_body_members =
+        StripJsonObjectBraces(m_extra_body_json);
+
+    std::ostringstream json;
+    json << "{"
+         << "\"model\":\"" << weasel::config_json::EscapeJsonString(m_model)
+         << "\","
+         << "\"messages\":["
+         << "{\"role\":\"user\",\"content\":\"" << escaped_prompt << "\"}"
+         << "],"
+         << "\"max_tokens\":" << m_max_tokens << ","
+         << "\"temperature\":" << m_temperature;
+    if (use_json_output && !m_has_custom_response_format) {
+      json << ",\"response_format\":{\"type\":\"json_object\"}";
     }
-    return candidates;
-  }
+    if (!extra_body_members.empty()) {
+      json << "," << extra_body_members;
+    }
+    json << "}";
 
-  // 输出响应内容到开发终端
-  if (g_dev_console && g_dev_console->IsEnabled()) {
-    g_dev_console->WriteLine(L"[LLM] 收到响应");
-    g_dev_console->WriteLine(L"  响应内容: " + u8tow(response_body));
-  }
+    const std::string request_body = json.str();
 
-  // 解析响应
-  candidates = ParseResponse(response_body);
+    if (g_dev_console && g_dev_console->IsEnabled()) {
+      g_dev_console->WriteLine(use_json_output
+                                   ? L"[LLM] 发送预测请求（JSON 约束模式）"
+                                   : L"[LLM] 发送预测请求（纯文本回退模式）");
+      g_dev_console->WriteLine(L"  上下文: " + context);
+      g_dev_console->WriteLine(L"  请求URL: " + u8tow(m_api_url));
+      g_dev_console->WriteLine(L"  请求体: " + u8tow(request_body));
+    }
+
+    std::string response_body;
+    if (!ExecuteRequest(m_api_url, request_body, response_body)) {
+      if (g_dev_console && g_dev_console->IsEnabled()) {
+        g_dev_console->WriteLine(L"[LLM] 请求失败");
+      }
+      return {};
+    }
+
+    if (g_dev_console && g_dev_console->IsEnabled()) {
+      g_dev_console->WriteLine(L"[LLM] 收到响应");
+      g_dev_console->WriteLine(L"  响应内容: " + u8tow(response_body));
+    }
+
+    return ParseResponse(response_body);
+  };
+
+  candidates = send_request(true);
+  if (candidates.empty() && !m_has_custom_response_format) {
+    if (g_dev_console && g_dev_console->IsEnabled()) {
+      g_dev_console->WriteLine(
+          L"[LLM] JSON 约束输出解析失败，回退到纯文本请求重试");
+    }
+    candidates = send_request(false);
+  }
 
   // if (g_dev_console && g_dev_console->IsEnabled()) {
   //   std::wstringstream ss;
@@ -534,44 +835,17 @@ bool OpenAICompatibleProvider::ExecuteRequest(const std::string& url,
 
 std::vector<std::wstring> OpenAICompatibleProvider::ParseResponse(
     const std::string& json_response) {
-  std::vector<std::wstring> candidates;
+  std::string content;
+  if (!ExtractJsonStringField(json_response, "content", content)) {
+    return {};
+  }
 
-  // 简单的JSON解析（查找content字段）
-  // 实际应该使用JSON库，这里简化处理
-  size_t content_pos = json_response.find("\"content\"");
-  if (content_pos == std::string::npos) {
+  std::vector<std::wstring> candidates = ParseStructuredCandidates(content);
+  if (!candidates.empty()) {
     return candidates;
   }
 
-  size_t colon_pos = json_response.find(':', content_pos);
-  if (colon_pos == std::string::npos) {
-    return candidates;
-  }
-
-  size_t quote_start = json_response.find('"', colon_pos);
-  if (quote_start == std::string::npos) {
-    return candidates;
-  }
-
-  size_t quote_end = json_response.find('"', quote_start + 1);
-  if (quote_end == std::string::npos) {
-    return candidates;
-  }
-
-  std::string content =
-      json_response.substr(quote_start + 1, quote_end - quote_start - 1);
-  std::wstring content_w = u8tow(content);
-
-  // 按空格分割
-  std::wstringstream ss(content_w);
-  std::wstring word;
-  while (ss >> word) {
-    if (!word.empty()) {
-      candidates.push_back(word);
-    }
-  }
-
-  return candidates;
+  return ParsePlainTextCandidates(content);
 }
 
 // 全局开发终端实例（供LLMProvider使用）

@@ -58,6 +58,7 @@ class OpenAICompatibleProvider : public LLMProvider {
   std::string m_model;
   int m_max_tokens;
   double m_temperature;
+  bool m_has_custom_response_format;
   std::string m_extra_body_json;
   std::vector<std::pair<std::string, std::string>> m_extra_headers;
   void* m_hSession;          // HINTERNET，复用的 WinHTTP 会话
