@@ -110,8 +110,10 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
 
   struct LLMCandidateSnapshot {
     std::vector<std::wstring> candidates;
+    std::vector<std::wstring> rerank_candidates;
     bool require_rime_candidates;
     bool enable_rime_reorder;
+    bool prefer_llm_primary;
   };
 
   void _Setup();
@@ -144,6 +146,10 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
                                const std::vector<std::wstring>& llm_candidates,
                                WeaselSessionId ipc_id,
                                EatLine eat);
+  bool _TryScheduleLLMForCurrentComposition(WeaselSessionId ipc_id,
+                                            RimeSessionId session_id,
+                                            DWORD event_time,
+                                            bool triggered_by_grave_key);
 
   bool _IsSessionTSF(RimeSessionId session_id);
   void _UpdateInlinePreeditStatus(WeaselSessionId ipc_id);
@@ -191,11 +197,13 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   std::unique_ptr<LLMProvider> m_llm_provider;
   bool m_llm_prediction_mode;
   std::vector<std::wstring> m_current_llm_candidates;
+  std::vector<std::wstring> m_current_llm_rerank_candidates;
   std::wstring m_pending_llm_commit;  // 待提交的LLM候选词
   std::atomic<uint64_t> m_llm_request_seq{0};  // LLM异步预测请求序号（用于丢弃旧结果）
   std::mutex m_llm_mutex;                      // 保护 m_current_llm_candidates
   bool m_current_llm_candidates_require_rime;
   bool m_current_llm_candidates_enable_rime_reorder;
+  bool m_current_llm_candidates_prefer_primary;
   bool m_llm_developer_mode;
   size_t m_llm_context_recent_words;
   size_t m_llm_context_max_chars;
@@ -209,6 +217,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   // 双击·键检测（用于清空上下文）
   DWORD m_last_grave_key_time;  // 上次·键按下的时间（毫秒）
   static const DWORD GRAVE_DOUBLE_CLICK_TIMEOUT = 500;  // 双击时间间隔阈值（毫秒）
+  static const DWORD LLM_TRADITIONAL_CANDIDATE_IDLE_DELAY_MS = 1000;  // 传统候选出现后至少等待 1 秒未选词才触发
   static const DWORD LLM_RERANK_SUPPRESS_MS = 800;      // 连续编辑后抑制重排时长
   static const DWORD LLM_EDIT_BURST_WINDOW_MS = 150;    // 识别连续编辑的时间窗口
   static const size_t LLM_EDIT_BURST_THRESHOLD = 3;     // 连续编辑触发抑制阈值

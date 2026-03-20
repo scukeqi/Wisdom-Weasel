@@ -31,8 +31,10 @@ class ContextHistory {
   // 返回的字符串用空格分隔
   std::wstring GetRecentContext(size_t count) const;
 
-  // 获取用户近期输入偏好摘要（按偏好强度排序，词之间用空格分隔）
-  std::wstring GetPreferenceHint(size_t count) const;
+  // 获取最近的原始连续文本上下文（保留中文自然连接与标点）
+  // max_chars 为 0 表示不限制；prefer_sentence_boundary 为 true 时尽量只返回最近一句/当前句片段
+  std::wstring GetRecentTextContext(size_t max_chars,
+                                    bool prefer_sentence_boundary = true) const;
 
   // 获取所有历史记录
   std::vector<std::wstring> GetAllHistory() const;
@@ -61,11 +63,11 @@ class ContextHistory {
   // 判断字符是否为分隔符
   bool IsSeparator(wchar_t ch) const;
 
+  // 判断字符是否为强句边界
+  bool IsStrongSentenceBoundary(wchar_t ch) const;
+
   // 当 size >= max_size 时尝试异步压缩最旧的 (max_size/2) 个词（不阻塞）
   void TryTriggerCompression(DevConsole* dev_console);
-
-  // 在持锁状态下根据当前历史重建偏好统计
-  void RebuildPreferenceStatsUnlocked();
 
   // 每次压缩取最旧的词数（max_size 的一半）
   size_t GetCompressWordCount() const { return m_max_size / 2; }
@@ -79,12 +81,7 @@ class ContextHistory {
 
   mutable std::mutex m_mutex;  // 线程安全锁
   std::vector<std::wstring> m_history;  // 历史记录（线性：最旧在 0，最新在 back）
-  struct PreferenceStat {
-    size_t count = 0;
-    uint64_t last_seen_order = 0;
-  };
-  std::map<std::wstring, PreferenceStat> m_preference_stats;  // 输入偏好统计
-  uint64_t m_preference_sequence;  // 单调递增序号，用于表达近期偏好
+  std::vector<std::wstring> m_text_history;  // 原始提交片段历史（保留自然文本形态）
   size_t m_max_size;  // 最大记录数量
   MemoryCompressor* m_memory_compressor;  // 记忆压缩 LLM（可为 nullptr）
   bool m_compressing;  // 是否正在压缩，避免重复触发

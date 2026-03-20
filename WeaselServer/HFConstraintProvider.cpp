@@ -30,118 +30,6 @@ std::string EscapeJsonString(const std::string& s) {
   return out;
 }
 
-bool IsExecutableRequest(const LLMRequest& request) {
-  switch (request.type) {
-    case LLMRequestType::NoInputPrediction:
-      return !request.context.empty() || !request.preference_hint.empty();
-    case LLMRequestType::PinyinConstrainedPrediction:
-      return !request.current_input.empty();
-    case LLMRequestType::RimeReorder:
-      return !request.rime_candidates.empty();
-  }
-  return false;
-}
-
-std::wstring GetRequestTypeName(LLMRequestType type) {
-  switch (type) {
-    case LLMRequestType::NoInputPrediction:
-      return L"无输入预测";
-    case LLMRequestType::PinyinConstrainedPrediction:
-      return L"拼音约束预测";
-    case LLMRequestType::RimeReorder:
-      return L"Rime 重排";
-  }
-  return L"未知请求";
-}
-
-std::wstring JoinCandidatesForPrompt(
-    const std::vector<std::wstring>& candidates) {
-  std::wstring joined;
-  for (size_t i = 0; i < candidates.size(); ++i) {
-    if (i > 0) {
-      joined += L"\n";
-    }
-    joined += std::to_wstring(i + 1) + L". \"" + candidates[i] + L"\"";
-  }
-  return joined;
-}
-
-std::wstring BuildPromptText(const LLMRequest& request) {
-  const size_t output_limit = (std::min)(
-      request.max_candidates,
-      request.type == LLMRequestType::RimeReorder ? request.rime_candidates.size()
-                                                  : request.max_candidates);
-
-  switch (request.type) {
-    case LLMRequestType::NoInputPrediction: {
-      std::wstring prompt =
-          L"请根据以下上下文预测接下来最可能出现的"
-          + std::to_wstring(request.max_candidates) + L"个中文候选词。\n"
-          L"只返回候选词，使用空格分隔，不要解释。\n";
-      prompt += L"上下文：\"" + request.context + L"\"\n";
-      if (!request.preference_hint.empty()) {
-        prompt +=
-            L"用户偏好（弱参考，可忽略）：\"" + request.preference_hint + L"\"\n";
-      }
-      prompt += L"候选词：";
-      return prompt;
-    }
-    case LLMRequestType::PinyinConstrainedPrediction: {
-      std::wstring prompt =
-          L"请根据以下上下文和当前拼音，预测接下来最可能出现的"
-          + std::to_wstring(request.max_candidates) + L"个中文候选词。\n"
-          L"只返回满足拼音约束的候选词，使用空格分隔，不要解释。\n";
-      prompt += L"上下文：\"" + request.context + L"\"\n";
-      if (!request.preference_hint.empty()) {
-        prompt +=
-            L"用户偏好（弱参考，可忽略）：\"" + request.preference_hint + L"\"\n";
-      }
-      prompt += L"当前拼音：\"" + request.current_input + L"\"\n候选词：";
-      return prompt;
-    }
-    case LLMRequestType::RimeReorder: {
-      std::wstring prompt =
-          L"请根据以下上下文、当前拼音和用户偏好，对给定的 Rime 候选词重新排序。\n"
-          L"只能从给定候选列表中选择，不得新增候选词；只返回重排后的前"
-          + std::to_wstring(output_limit)
-          + L"个候选词，使用空格分隔，不要解释。\n";
-      prompt += L"上下文：\"" + request.context + L"\"\n";
-      if (!request.preference_hint.empty()) {
-        prompt +=
-            L"用户偏好（弱参考，可忽略）：\"" + request.preference_hint + L"\"\n";
-      }
-      if (!request.current_input.empty()) {
-        prompt += L"当前拼音：\"" + request.current_input + L"\"\n";
-      }
-      prompt +=
-          L"Rime 候选词：\n" + JoinCandidatesForPrompt(request.rime_candidates)
-          + L"\n重排结果：";
-      return prompt;
-    }
-  }
-  return std::wstring();
-}
-
-std::vector<std::string> BuildConstraintParts(const LLMRequest& request) {
-  std::vector<std::string> constraint_parts;
-  if (request.type == LLMRequestType::NoInputPrediction ||
-      request.current_input.empty()) {
-    return constraint_parts;
-  }
-
-  std::wstringstream ss(request.current_input);
-  std::wstring part;
-  while (ss >> part) {
-    if (!part.empty()) {
-      constraint_parts.push_back(wtou8(part));
-    }
-  }
-  if (constraint_parts.empty()) {
-    constraint_parts.push_back(wtou8(request.current_input));
-  }
-  return constraint_parts;
-}
-
 }  // namespace
 
 HFConstraintProvider::HFConstraintProvider()
@@ -243,21 +131,23 @@ bool HFConstraintProvider::LoadConfig(const std::string& config_name) {
 }
 
 std::vector<std::wstring> HFConstraintProvider::ExecuteRequest(
-    const LLMRequest& request) {
+    const LLMRequest& request,
+    const LLMPartialCallback& /*on_partial*/) {
   std::vector<std::wstring> candidates;
 
-  if (!IsAvailable() || !IsExecutableRequest(request)) {
+  if (!IsAvailable() || !llm_request::IsExecutable(request)) {
     return candidates;
   }
 
-  std::wstring prompt_text = BuildPromptText(request);
+  std::wstring prompt_text = llm_request::BuildCompactPrompt(request);
   if (prompt_text.empty()) {
     return candidates;
   }
   std::string prompt_utf8 = wtou8(prompt_text);
   std::string escaped_prompt = EscapeJsonString(prompt_utf8);
 
-  std::vector<std::string> constraint_parts = BuildConstraintParts(request);
+  std::vector<std::string> constraint_parts =
+      llm_request::BuildPinyinConstraintParts(request);
 
   std::ostringstream json;
   json << "{\"prompt\":\"" << escaped_prompt << "\",\"pinyin_constraints\":[";
@@ -273,11 +163,9 @@ std::vector<std::wstring> HFConstraintProvider::ExecuteRequest(
   extern DevConsole* g_dev_console;
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] [HF Constraint] 发送请求");
-    g_dev_console->WriteLine(L"  请求类型: " + GetRequestTypeName(request.type));
+    g_dev_console->WriteLine(L"  请求类型: " +
+                             llm_request::GetRequestTypeName(request.type));
     g_dev_console->WriteLine(L"  上下文: " + request.context);
-    if (!request.preference_hint.empty()) {
-      g_dev_console->WriteLine(L"  用户偏好: " + request.preference_hint);
-    }
     if (!request.current_input.empty()) {
       g_dev_console->WriteLine(L"  当前输入: " + request.current_input);
     }
@@ -358,8 +246,8 @@ bool HFConstraintProvider::ExecuteHttpRequest(const std::string& url,
     if (!hSession) {
       return false;
     }
-    DWORD timeout = 10000;
-    WinHttpSetTimeouts(hSession, timeout, timeout, timeout, timeout);
+    // HF 后端冷启动首个请求可能超过 10 秒；放宽接收超时避免首请求被打断。
+    WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 60000);
     hConnect = WinHttpConnect(hSession, hostname_str.c_str(), port, 0);
     if (!hConnect) {
       WinHttpCloseHandle(hSession);

@@ -7,13 +7,14 @@
 #include <locale>
 #include <codecvt>
 #include <set>
+#include <cwctype>
 
 ContextHistory::ContextHistory(size_t max_size)
     : m_max_size(max_size > 0 ? max_size : 50),
-      m_preference_sequence(0),
       m_memory_compressor(nullptr),
       m_compressing(false) {
   m_history.reserve(m_max_size);
+  m_text_history.reserve(m_max_size);
 }
 
 ContextHistory::~ContextHistory() {
@@ -26,8 +27,15 @@ void ContextHistory::AddText(const std::wstring& text, DevConsole* dev_console) 
   }
 
   std::vector<std::wstring> words = DeduplicateWords(SplitIntoWords(text));
+  std::wstring trimmed_text = text;
+  while (!trimmed_text.empty() && std::iswspace(trimmed_text.front())) {
+    trimmed_text.erase(trimmed_text.begin());
+  }
+  while (!trimmed_text.empty() && std::iswspace(trimmed_text.back())) {
+    trimmed_text.pop_back();
+  }
   size_t history_words_added = 0;
-  size_t preference_words_added = 0;
+  size_t deduplicated_input_words = words.size();
   size_t deduplicated_history_words = 0;
   size_t current_size = 0;
   bool should_trigger_compression = false;
@@ -39,8 +47,6 @@ void ContextHistory::AddText(const std::wstring& text, DevConsole* dev_console) 
         continue;
       }
 
-      preference_words_added++;
-
       if (!m_history.empty() && m_history.back() == word) {
         deduplicated_history_words++;
         continue;
@@ -48,6 +54,14 @@ void ContextHistory::AddText(const std::wstring& text, DevConsole* dev_console) 
 
       m_history.push_back(word);
       history_words_added++;
+    }
+    if (!trimmed_text.empty()) {
+      if (m_text_history.empty() || m_text_history.back() != trimmed_text) {
+        m_text_history.push_back(trimmed_text);
+      }
+      while (m_text_history.size() > m_max_size) {
+        m_text_history.erase(m_text_history.begin());
+      }
     }
     if (!m_memory_compressor || !m_memory_compressor->IsAvailable()) {
       size_t batch = GetCompressWordCount();
@@ -67,14 +81,13 @@ void ContextHistory::AddText(const std::wstring& text, DevConsole* dev_console) 
         m_history.size() >= GetCompressWordCount()) {
       should_trigger_compression = true;
     }
-    RebuildPreferenceStatsUnlocked();
   }
 
   if (dev_console && dev_console->IsEnabled()) {
     std::wstringstream ss;
     ss << L"[上下文更新] 添加文本: " << text;
-    if (preference_words_added > 0) {
-      ss << L" -> 去重后 " << preference_words_added << L" 个词";
+    if (deduplicated_input_words > 0) {
+      ss << L" -> 去重后 " << deduplicated_input_words << L" 个词";
     }
     if (deduplicated_history_words > 0) {
       ss << L"（连续重复跳过 " << deduplicated_history_words << L" 个）";
@@ -85,10 +98,6 @@ void ContextHistory::AddText(const std::wstring& text, DevConsole* dev_console) 
     if (current_size > 0) {
       std::wstring recent = GetRecentContext(10);
       if (!recent.empty()) dev_console->WriteLine(L"  最近10个词: " + recent);
-      std::wstring preference_hint = GetPreferenceHint(6);
-      if (!preference_hint.empty()) {
-        dev_console->WriteLine(L"  偏好词: " + preference_hint);
-      }
     }
   }
 
@@ -110,61 +119,68 @@ std::wstring ContextHistory::GetRecentContext(size_t count) const {
   return ss.str();
 }
 
-std::wstring ContextHistory::GetPreferenceHint(size_t count) const {
+std::wstring ContextHistory::GetRecentTextContext(size_t max_chars,
+                                                  bool prefer_sentence_boundary) const {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (m_history.empty() || count == 0) {
+  if (m_text_history.empty()) {
     return L"";
   }
 
-  struct RankedPreference {
-    std::wstring word;
-    size_t count;
-    uint64_t last_seen_order;
-  };
-
-  const size_t recent_window_size =
-      (std::min)(m_history.size(), (std::max)(count * 6, static_cast<size_t>(18)));
-  const size_t start = m_history.size() - recent_window_size;
-  std::map<std::wstring, PreferenceStat> recent_preference_stats;
-  uint64_t recent_sequence = 0;
-
-  for (size_t i = start; i < m_history.size(); ++i) {
-    const std::wstring& word = m_history[i];
-    if (word.empty()) {
+  const size_t hard_char_limit = max_chars > 0 ? max_chars : 96;
+  std::vector<std::wstring> segments;
+  size_t accumulated_chars = 0;
+  for (auto it = m_text_history.rbegin(); it != m_text_history.rend(); ++it) {
+    if (it->empty()) {
       continue;
     }
-    PreferenceStat& stat = recent_preference_stats[word];
-    stat.count++;
-    stat.last_seen_order = ++recent_sequence;
-  }
-
-  std::vector<RankedPreference> ranked_preferences;
-  ranked_preferences.reserve(recent_preference_stats.size());
-  for (const auto& entry : recent_preference_stats) {
-    ranked_preferences.push_back(
-        {entry.first, entry.second.count, entry.second.last_seen_order});
-  }
-
-  std::sort(ranked_preferences.begin(), ranked_preferences.end(),
-            [](const RankedPreference& lhs, const RankedPreference& rhs) {
-              if (lhs.count != rhs.count) {
-                return lhs.count > rhs.count;
-              }
-              if (lhs.last_seen_order != rhs.last_seen_order) {
-                return lhs.last_seen_order > rhs.last_seen_order;
-              }
-              return lhs.word < rhs.word;
-            });
-
-  const size_t actual_count = (std::min)(count, ranked_preferences.size());
-  std::wstringstream ss;
-  for (size_t i = 0; i < actual_count; ++i) {
-    if (i > 0) {
-      ss << L" ";
+    segments.push_back(*it);
+    accumulated_chars += it->size();
+    if (accumulated_chars >= hard_char_limit) {
+      break;
     }
-    ss << ranked_preferences[i].word;
   }
-  return ss.str();
+
+  std::wstring text;
+  for (auto it = segments.rbegin(); it != segments.rend(); ++it) {
+    text += *it;
+  }
+
+  if (hard_char_limit > 0 && text.size() > hard_char_limit) {
+    text = text.substr(text.size() - hard_char_limit);
+  }
+
+  if (!prefer_sentence_boundary || text.empty()) {
+    return text;
+  }
+
+  size_t last_non_space = text.find_last_not_of(L" \t\r\n");
+  if (last_non_space == std::wstring::npos) {
+    return text;
+  }
+
+  const bool ends_with_boundary = IsStrongSentenceBoundary(text[last_non_space]);
+  size_t boundary_pos = std::wstring::npos;
+
+  if (ends_with_boundary) {
+    if (last_non_space > 0) {
+      boundary_pos = text.find_last_of(L"。！？!?；;\n", last_non_space - 1);
+    }
+  } else {
+    boundary_pos = text.find_last_of(L"。！？!?；;\n", last_non_space);
+  }
+
+  if (boundary_pos != std::wstring::npos && boundary_pos + 1 < text.size()) {
+    std::wstring sentence = text.substr(boundary_pos + 1);
+    size_t first_non_space = sentence.find_first_not_of(L" \t\r\n");
+    if (first_non_space != std::wstring::npos) {
+      sentence.erase(0, first_non_space);
+    }
+    if (!sentence.empty()) {
+      return sentence;
+    }
+  }
+
+  return text;
 }
 
 std::vector<std::wstring> ContextHistory::GetAllHistory() const {
@@ -175,8 +191,7 @@ std::vector<std::wstring> ContextHistory::GetAllHistory() const {
 void ContextHistory::Clear(DevConsole* dev_console) {
   std::lock_guard<std::mutex> lock(m_mutex);
   m_history.clear();
-  m_preference_stats.clear();
-  m_preference_sequence = 0;
+  m_text_history.clear();
   m_compressing = false;
   if (dev_console && dev_console->IsEnabled()) {
     dev_console->WriteLine(L"[上下文更新] 历史记录已清空");
@@ -242,7 +257,9 @@ void ContextHistory::ReplaceOldestWithCompressed(
   while (m_history.size() > m_max_size) {
     m_history.erase(m_history.begin());
   }
-  RebuildPreferenceStatsUnlocked();
+  while (m_text_history.size() > m_max_size) {
+    m_text_history.erase(m_text_history.begin());
+  }
   m_compressing = false;
   if (dev_console && dev_console->IsEnabled()) {
     std::wstringstream ss;
@@ -297,19 +314,6 @@ std::vector<std::wstring> ContextHistory::DeduplicateWords(
   return deduplicated_words;
 }
 
-void ContextHistory::RebuildPreferenceStatsUnlocked() {
-  m_preference_stats.clear();
-  m_preference_sequence = 0;
-  for (const auto& word : m_history) {
-    if (word.empty()) {
-      continue;
-    }
-    PreferenceStat& stat = m_preference_stats[word];
-    stat.count++;
-    stat.last_seen_order = ++m_preference_sequence;
-  }
-}
-
 bool ContextHistory::IsSeparator(wchar_t ch) const {
   // 空格、制表符、换行符
   if (ch == L' ' || ch == L'\t' || ch == L'\n' || ch == L'\r') {
@@ -334,5 +338,11 @@ bool ContextHistory::IsSeparator(wchar_t ch) const {
   }
 
   return false;
+}
+
+bool ContextHistory::IsStrongSentenceBoundary(wchar_t ch) const {
+  return ch == L'。' || ch == L'！' || ch == L'？' || ch == L'!' ||
+         ch == L'?' || ch == L'；' || ch == L';' || ch == L'\n' ||
+         ch == L'\r';
 }
 

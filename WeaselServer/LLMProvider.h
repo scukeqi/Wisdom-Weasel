@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -17,10 +18,32 @@ struct LLMRequest {
   LLMRequestType type = LLMRequestType::NoInputPrediction;
   std::wstring context;          // 最近上下文
   std::wstring current_input;    // 当前拼音/输入串
-  std::wstring preference_hint;  // 用户偏好弱提示
   std::vector<std::wstring> rime_candidates;  // Rime 原始候选，仅 Rime 重排使用
   size_t max_candidates = 5;
 };
+
+using LLMPartialCallback =
+    std::function<bool(const std::vector<std::wstring>& candidates)>;
+
+namespace llm_request {
+
+struct InstructPrompt {
+  std::wstring system_prompt;
+  std::wstring user_prompt;
+};
+
+bool IsExecutable(const LLMRequest& request);
+std::wstring GetRequestTypeName(LLMRequestType type);
+size_t GetOutputLimit(const LLMRequest& request);
+std::wstring JoinCandidatesForPrompt(
+    const std::vector<std::wstring>& candidates);
+InstructPrompt BuildInstructPrompt(const LLMRequest& request);
+std::wstring BuildCompactPrompt(const LLMRequest& request);
+std::wstring BuildBaseCompletionPrompt(const LLMRequest& request);
+std::vector<std::string> BuildPinyinConstraintParts(
+    const LLMRequest& request);
+
+}  // namespace llm_request
 
 // LLM提供者抽象基类
 class LLMProvider {
@@ -32,7 +55,8 @@ class LLMProvider {
 
   // 执行统一请求，由主程序提前分流请求类型
   virtual std::vector<std::wstring> ExecuteRequest(
-      const LLMRequest& request) = 0;
+      const LLMRequest& request,
+      const LLMPartialCallback& on_partial = nullptr) = 0;
 
   // 检查LLM是否可用
   virtual bool IsAvailable() const = 0;
@@ -49,7 +73,8 @@ class OpenAICompatibleProvider : public LLMProvider {
 
   bool LoadConfig(const std::string& config_name) override;
   std::vector<std::wstring> ExecuteRequest(
-      const LLMRequest& request) override;
+      const LLMRequest& request,
+      const LLMPartialCallback& on_partial = nullptr) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "OpenAI Compatible"; }
 
@@ -57,7 +82,15 @@ class OpenAICompatibleProvider : public LLMProvider {
   // 执行HTTP请求
   bool ExecuteHttpRequest(const std::string& url,
                           const std::string& request_body,
+                          size_t max_candidates,
+                          const LLMPartialCallback& on_partial,
                           std::string& response_body);
+  bool ExecuteOllamaGenerateRequest(const std::string& url,
+                                    const std::string& request_body,
+                                    const std::string& prompt_prefix_utf8,
+                                    size_t max_candidates,
+                                    const LLMPartialCallback& on_partial,
+                                    std::string& response_body);
   // 解析JSON响应
   std::vector<std::wstring> ParseResponse(const std::string& json_response);
   void CloseConnection();  // 关闭并清空复用的 HTTP 连接
@@ -83,7 +116,8 @@ class LlamaCppProvider : public LLMProvider {
 
   bool LoadConfig(const std::string& config_name) override;
   std::vector<std::wstring> ExecuteRequest(
-      const LLMRequest& request) override;
+      const LLMRequest& request,
+      const LLMPartialCallback& on_partial = nullptr) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "llama.cpp Local"; }
 
@@ -136,7 +170,8 @@ class HFConstraintProvider : public LLMProvider {
   ~HFConstraintProvider() override;
   bool LoadConfig(const std::string& config_name) override;
   std::vector<std::wstring> ExecuteRequest(
-      const LLMRequest& request) override;
+      const LLMRequest& request,
+      const LLMPartialCallback& on_partial = nullptr) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "HF Constraint"; }
 
