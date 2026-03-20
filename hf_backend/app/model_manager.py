@@ -2,9 +2,8 @@
 模型管理器：负责加载和管理LLM模型和tokenizer
 """
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from typing import Optional
-import os
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from typing import Optional, Any, Dict
 
 
 from app.pinyin_constraint import mapping_pinyin_to_ids
@@ -16,9 +15,12 @@ class ModelManager:
     def __init__(
         self,
         model_id: str,
-        torch_dtype: torch.dtype = torch.bfloat16,
+        torch_dtype: Any = torch.bfloat16,
         device_map: str = "auto",
-        trust_remote_code: bool = False
+        trust_remote_code: bool = False,
+        adapter_path: Optional[str] = None,
+        merge_adapter_on_load: bool = False,
+        model_kwargs: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化模型管理器
@@ -33,11 +35,25 @@ class ModelManager:
         self.torch_dtype = torch_dtype
         self.device_map = device_map
         self.trust_remote_code = trust_remote_code
+        self.adapter_path = adapter_path
+        self.merge_adapter_on_load = merge_adapter_on_load
+        self.model_kwargs = model_kwargs or {}
         
         self.model = None
         self.tokenizer = None
         self.device = None
         self.pinyin_mapping = None
+
+    def _prepare_model_kwargs(self) -> Dict[str, Any]:
+        model_kwargs = dict(self.model_kwargs)
+        quantization_config = model_kwargs.get("quantization_config")
+        if isinstance(quantization_config, dict):
+            quantization_dict = dict(quantization_config)
+            compute_dtype = quantization_dict.get("bnb_4bit_compute_dtype")
+            if isinstance(compute_dtype, str):
+                quantization_dict["bnb_4bit_compute_dtype"] = getattr(torch, compute_dtype)
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(**quantization_dict)
+        return model_kwargs
         
     def load_model(self):
         """加载模型和tokenizer"""
@@ -54,12 +70,28 @@ class ModelManager:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
         # 加载模型
+        model_kwargs = self._prepare_model_kwargs()
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_id,
             torch_dtype=self.torch_dtype,
             device_map=self.device_map,
-            trust_remote_code=self.trust_remote_code
+            trust_remote_code=self.trust_remote_code,
+            low_cpu_mem_usage=True,
+            **model_kwargs,
         )
+
+        if self.adapter_path:
+            from peft import PeftModel
+
+            print(f"正在加载 LoRA/PEFT 适配器: {self.adapter_path}")
+            self.model = PeftModel.from_pretrained(
+                self.model,
+                self.adapter_path,
+                is_trainable=False,
+            )
+            if self.merge_adapter_on_load:
+                print("正在合并适配器权重到基础模型...")
+                self.model = self.model.merge_and_unload()
         
         # 获取模型设备
         if isinstance(self.device_map, str) and self.device_map == "auto":
@@ -93,3 +125,10 @@ class ModelManager:
     def get_pinyins_mapping(self):
         """获取拼音到ID的映射"""
         return self.pinyin_mapping
+
+    def get_model_description(self) -> Dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "adapter_path": self.adapter_path,
+            "device": str(self.device) if self.device is not None else None,
+        }

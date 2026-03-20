@@ -4,6 +4,7 @@
 #include <WeaselUtility.h>
 #include <rime_api.h>
 #include <winhttp.h>
+#include <algorithm>
 #include <sstream>
 
 #pragma comment(lib, "winhttp.lib")
@@ -129,34 +130,24 @@ bool HFConstraintProvider::LoadConfig(const std::string& config_name) {
   return true;
 }
 
-std::vector<std::wstring> HFConstraintProvider::PredictCandidates(
-    const std::wstring& context,
-    const std::wstring& current_input,
-    size_t max_candidates) {
+std::vector<std::wstring> HFConstraintProvider::ExecuteRequest(
+    const LLMRequest& request,
+    const LLMPartialCallback& /*on_partial*/) {
   std::vector<std::wstring> candidates;
 
-  if (!IsAvailable() || context.empty()) {
+  if (!IsAvailable() || !llm_request::IsExecutable(request)) {
     return candidates;
   }
 
-  // 允许空上下文（冷启动），仍向后端发送请求，与 RimeWithWeasel 的“支持冷启动”一致
-  std::string prompt_utf8 = wtou8(context);
+  std::wstring prompt_text = llm_request::BuildCompactPrompt(request);
+  if (prompt_text.empty()) {
+    return candidates;
+  }
+  std::string prompt_utf8 = wtou8(prompt_text);
   std::string escaped_prompt = EscapeJsonString(prompt_utf8);
 
-  // pinyin_constraints: 当前输入，按空格分割为拼音音节数组
-  std::vector<std::string> constraint_parts;
-  if (!current_input.empty()) {
-    std::wstringstream ss(current_input);
-    std::wstring part;
-    while (ss >> part) {
-      if (!part.empty()) {
-        constraint_parts.push_back(wtou8(part));
-      }
-    }
-    if (constraint_parts.empty()) {
-      constraint_parts.push_back(wtou8(current_input));
-    }
-  }
+  std::vector<std::string> constraint_parts =
+      llm_request::BuildPinyinConstraintParts(request);
 
   std::ostringstream json;
   json << "{\"prompt\":\"" << escaped_prompt << "\",\"pinyin_constraints\":[";
@@ -171,15 +162,23 @@ std::vector<std::wstring> HFConstraintProvider::PredictCandidates(
 
   extern DevConsole* g_dev_console;
   if (g_dev_console && g_dev_console->IsEnabled()) {
-    g_dev_console->WriteLine(L"[LLM] [HF Constraint] 发送预测请求");
-    g_dev_console->WriteLine(L"  上下文: " + context);
-    g_dev_console->WriteLine(L"  当前输入: " + current_input);
+    g_dev_console->WriteLine(L"[LLM] [HF Constraint] 发送请求");
+    g_dev_console->WriteLine(L"  请求类型: " +
+                             llm_request::GetRequestTypeName(request.type));
+    g_dev_console->WriteLine(L"  上下文: " + request.context);
+    if (!request.current_input.empty()) {
+      g_dev_console->WriteLine(L"  当前输入: " + request.current_input);
+    }
+    if (!request.rime_candidates.empty()) {
+      g_dev_console->WriteLine(
+          L"  Rime候选数: " + std::to_wstring(request.rime_candidates.size()));
+    }
     g_dev_console->WriteLine(L"  请求URL: " + u8tow(m_api_url));
     g_dev_console->WriteLine(L"  请求体: " + u8tow(request_body));
   }
 
   std::string response_body;
-  if (!ExecuteRequest(m_api_url, request_body, response_body)) {
+  if (!ExecuteHttpRequest(m_api_url, request_body, response_body)) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(L"[LLM] [HF Constraint] 请求失败");
     }
@@ -193,8 +192,8 @@ std::vector<std::wstring> HFConstraintProvider::PredictCandidates(
 
   candidates = ParseResponse(response_body);
 
-  if ((size_t)candidates.size() > max_candidates) {
-    candidates.resize(max_candidates);
+  if (candidates.size() > request.max_candidates) {
+    candidates.resize(request.max_candidates);
   }
 
   return candidates;
@@ -204,9 +203,9 @@ bool HFConstraintProvider::IsAvailable() const {
   return m_enabled && !m_api_url.empty();
 }
 
-bool HFConstraintProvider::ExecuteRequest(const std::string& url,
-                                         const std::string& request_body,
-                                         std::string& response_body) {
+bool HFConstraintProvider::ExecuteHttpRequest(const std::string& url,
+                                              const std::string& request_body,
+                                              std::string& response_body) {
   URL_COMPONENTS url_comp = {0};
   url_comp.dwStructSize = sizeof(URL_COMPONENTS);
   url_comp.dwSchemeLength = (DWORD)-1;
@@ -247,8 +246,8 @@ bool HFConstraintProvider::ExecuteRequest(const std::string& url,
     if (!hSession) {
       return false;
     }
-    DWORD timeout = 10000;
-    WinHttpSetTimeouts(hSession, timeout, timeout, timeout, timeout);
+    // HF 后端冷启动首个请求可能超过 10 秒；放宽接收超时避免首请求被打断。
+    WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 60000);
     hConnect = WinHttpConnect(hSession, hostname_str.c_str(), port, 0);
     if (!hConnect) {
       WinHttpCloseHandle(hSession);
