@@ -10,7 +10,7 @@ class Config:
     
     DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config.json"
     DEFAULT_CONFIG = {
-        "model_id": "Qwen/Qwen3-4B",
+        "model_id": "Qwen/Qwen3.5-0.8B",
         "torch_dtype": "bfloat16",
         "device_map": "auto",
         "trust_remote_code": False,

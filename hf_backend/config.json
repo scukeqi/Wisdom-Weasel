@@ -1,12 +1,19 @@
 {
-  "comment": "HF Constraint 后端标准档：优先使用效果更好的 Qwen3 4B 官方模型。",
-  "model_id": "Qwen/Qwen3-4B",
+  "comment": "HF Constraint 后端当前切到官方 Qwen3.5-0.8B。",
+  "model_id": "Qwen/Qwen3.5-0.8B",
   "torch_dtype": "auto",
   "device_map": "auto",
   "trust_remote_code": false,
   "adapter_path": null,
   "merge_adapter_on_load": false,
-  "model_kwargs": {},
+  "model_kwargs": {
+    "quantization_config": {
+      "load_in_4bit": true,
+      "bnb_4bit_compute_dtype": "bfloat16",
+      "bnb_4bit_quant_type": "nf4",
+      "bnb_4bit_use_double_quant": true
+    }
+  },
   "prompting": {
     "use_chat_template": true,
     "system_prompt": "你是 Wisdom Weasel 输入法候选生成模型。请根据历史上下文和当前拼音，输出最自然、最贴合用户意图的中文候选。只输出候选文本本身，不要解释，不要编号，不要额外标点。"
