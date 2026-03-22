@@ -57,7 +57,7 @@
 
 1. 运行 `build.bat x64` 执行构建；
 2. 依赖与官方 Weasel 一致（如 Boost、librime、yaml-cpp 等，见项目与 `weasel.props`）；
-3. 若使用 `llamacpp` 后端，需从 [llamacpp](https://github.com/ggml-org/llama.cpp/releases) 获取对应 dll 文件并放置到指定目录；
+3. 若使用 `llamacpp` 后端，需从 [llamacpp](https://github.com/ggml-org/llama.cpp/releases) 获取对应 dll 文件并放置到指定目录。
 
 ---
 
