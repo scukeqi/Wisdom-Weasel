@@ -3,7 +3,9 @@
 基于 [Rime 小狼毫（Weasel）](https://github.com/rime/weasel) 开源输入法，增加 **基于大语言模型（LLM）的智能预测** 功能：在保留 Rime 全套方案与词库的前提下，用 LLM 根据当前输入与历史上下文生成候选词，支持本地推理与云端 API 多种后端。
 
 ---
+
 ![demo](demo.gif)
+
 ## 功能特性
 
 - **多后端 LLM 预测**
@@ -29,19 +31,49 @@
 
 ## 安装与构建
 
-- **直接使用**：从 [Releases](https://github.com/scukeqi/Wisdom-Weasel/releases)下载安装包，安装后与官方小狼毫一样使用。
-  - 配置初始拼音输入方案,如：[雾凇拼音](https://github.com/iDvel/rime-ice)等。
-  - `weasel.yaml` 中启用并配置 LLM 。
-- **从源码构建**：  
-  - 运行 `build.bat x64`  
-  - 依赖与官方 Weasel 一致（如 Boost、librime、yaml-cpp 等，见项目与 `weasel.props`）。  
-  - 若使用 `llamacpp`，需要从[llamacpp](https://github.com/ggml-org/llama.cpp/releases)获取dll。
+**直接使用（推荐）**
+
+    从 [Releases](https://github.com/scukeqi/Wisdom-Weasel/releases) 下载适合设备的安装包，步骤如下：
+
+1. 解压安装包后运行 `WeaselSetup.exe` 完成安装；
+2. 配置初始拼音输入方案（如：[雾凇拼音](https://github.com/iDvel/rime-ice) 等）；
+3. 在 `weasel.yaml` 中启用并配置 LLM（参考「LLM 配置说明」）；
+4. 右键托盘「小狼毫输入法」图标，选择「重新部署」使配置生效。
+- **安装包版本与显卡适配说明**
+  
+  如果选择使用llama.cpp 本地（`provider_type: llamacpp`）则须注意选择版本
+  
+  Releases 中提供 **CUDA / SYCL / Vulkan** 版本，适配不同品牌显卡：
+  
+  - **CUDA**：**NVIDIA**显卡(支持cuda的型号)；
+  
+  - **SYCL** ：适配 **Intel** 、**AMD** 显卡(支持的sycl型号)；
+  
+  - **Vulkan** ：通用，支持大部分集成/独立显卡，选择此版本兜底。
+
+**从源码构建**
+
+    若需自定义开发，可从源码构建：
+
+1. 运行 `build.bat x64` 执行构建；
+2. 依赖与官方 Weasel 一致（如 Boost、librime、yaml-cpp 等，见项目与 `weasel.props`）；
+3. 若使用 `llamacpp` 后端，需从 [llamacpp](https://github.com/ggml-org/llama.cpp/releases) 获取对应 dll 文件并放置到指定目录；
+
+---
+
+## 使用说明
+
+- 安装/构建完成后，在键盘布局中选择「小狼毫」即可正常使用；
+- 右键托盘输入法指示器「中」或「A」图标，可访问「程序文件夹」「用户文件夹」「重新部署」「输入法设置」等功能；
+- 修改 `weasel.yaml` 中 LLM 等相关配置后，需「重新部署」或重启 Weasel 服务才能生效。
+- 生成异常时可以双击~键清空上下文
 
 ---
 
 ## LLM 配置说明
 
-配置写在 **Rime 用户目录** 下的 `weasel.yaml`中。
+LLM配置写在 `Rime 程序文件夹\data\weasel.yaml`中。
+
 ### 总开关与提供者类型
 
 ```yaml
@@ -85,6 +117,7 @@ llm:
 ```
 
 ### 3. HF Constraint（`provider_type: hf_constraint`）
+
 [hf_backend 详细配置步骤](https://github.com/scukeqi/Wisdom-Weasel/blob/main/hf_backend/README.md)
 
 拼音约束接口，请求体形如：`{"prompt": "历史上下文", "pinyin_constraints": ["当前输入"]}`：
@@ -96,7 +129,9 @@ llm:
   hf_constraint:
     api_url: "http://localhost:8000/v1/generate/completions"
 ```
+
 推荐使用Base模型
+
 ### 可选：记忆压缩（`llm/memory/`）
 
 当上下文历史超过容量时，可用单独配置的 LLM 将旧词压缩为摘要（与预测用 LLM 分离）：
@@ -119,14 +154,6 @@ llm:
 dev_console:
   enabled: true
 ```
----
-
-## 使用说明
-
-- 安装/构建完成后，与官方小狼毫相同：在输入法指示器中选择【中】图标即可使用。  
-- 通过右键托盘图标 **小狼毫输入法** 可访问「用户文件夹」「重新部署」等。  
-- 修改 `weasel.yaml` 中 LLM 相关配置后，需要 **重新部署** 或重启 Weasel 服务后生效。  
-
 
 ---
 
