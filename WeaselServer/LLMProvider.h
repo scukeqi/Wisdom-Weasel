@@ -101,6 +101,14 @@ class LlamaCppProvider : public LLMProvider {
   int m_n_gpu_layers;             // GPU层数
   int m_max_tokens;               // 最大生成token数
   double m_temperature;           // 温度参数
+  int m_top_k;                    // Top-K 采样
+  double m_top_p;                 // Top-P (nucleus) 采样
+  double m_repeat_penalty;        // 重复惩罚
+  double m_presence_penalty;      // 出现惩罚
+  double m_frequency_penalty;     // 频率惩罚
+  int m_mirostat;                 // 0=关闭, 1=mirostat v1, 2=mirostat v2
+  double m_min_p;                 // 最小概率过滤
+  double m_typical_p;             // typical sampling
   int m_n_threads;                // 线程数
   bool m_instruct_model;          // true=Instruct 使用指令 prompt，false=Base 仅用 context 补全
 

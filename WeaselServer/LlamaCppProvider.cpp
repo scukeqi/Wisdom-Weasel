@@ -16,6 +16,14 @@ LlamaCppProvider::LlamaCppProvider()
       m_n_gpu_layers(0),
       m_max_tokens(10),
       m_temperature(0.7),
+      m_top_k(40),
+      m_top_p(0.95),
+      m_repeat_penalty(1.1),
+      m_presence_penalty(0.0),
+      m_frequency_penalty(0.0),
+      m_mirostat(0),
+      m_min_p(0.05),
+      m_typical_p(1.0),
       m_n_threads(4),
       m_instruct_model(true),
       m_model(nullptr),
@@ -91,6 +99,20 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
   // 读取 llama.cpp 配置
   const int BUF_SIZE = 512;
   char buffer[BUF_SIZE + 1] = {0};
+  auto load_float_config = [&](const char* key, double default_value, double& out_value) {
+    char num_str[64] = {0};
+    if (rime_api->config_get_string(&config, key, num_str, sizeof(num_str) - 1)) {
+      out_value = atof(num_str);
+      if (g_dev_console && g_dev_console->IsEnabled()) {
+        g_dev_console->WriteLine(L"[LLM] 找到配置项 " + u8tow(key) + L" = " + std::to_wstring(out_value));
+      }
+    } else {
+      out_value = default_value;
+      if (g_dev_console && g_dev_console->IsEnabled()) {
+        g_dev_console->WriteLine(L"[LLM] 未找到配置项 " + u8tow(key) + L"，使用默认值 = " + std::to_wstring(out_value));
+      }
+    }
+  };
 
   // 模型路径（必需）
   bool found_model_path = rime_api->config_get_string(&config, "llm/llamacpp/model_path", buffer, BUF_SIZE);
@@ -150,19 +172,44 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
     }
   }
 
-  // 温度参数（可选，默认0.7）
-  char temp_str[64] = {0};
-  if (rime_api->config_get_string(&config, "llm/llamacpp/temperature", temp_str, sizeof(temp_str) - 1)) {
-    m_temperature = atof(temp_str);
+  // 采样参数（可选）
+  load_float_config("llm/llamacpp/temperature", 0.7, m_temperature);
+
+  int top_k = 40;
+  if (rime_api->config_get_int(&config, "llm/llamacpp/top_k", &top_k)) {
+    m_top_k = top_k;
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/llamacpp/temperature = " + std::to_wstring(m_temperature));
+      g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/llamacpp/top_k = " + std::to_wstring(m_top_k));
     }
   } else {
-    m_temperature = 0.7;
+    m_top_k = 40;
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] 未找到配置项 llm/llamacpp/temperature，使用默认值 = " + std::to_wstring(m_temperature));
+      g_dev_console->WriteLine(L"[LLM] 未找到配置项 llm/llamacpp/top_k，使用默认值 = " + std::to_wstring(m_top_k));
     }
   }
+
+  load_float_config("llm/llamacpp/top_p", 0.95, m_top_p);
+  load_float_config("llm/llamacpp/repeat_penalty", 1.1, m_repeat_penalty);
+  load_float_config("llm/llamacpp/presence_penalty", 0.0, m_presence_penalty);
+  load_float_config("llm/llamacpp/frequency_penalty", 0.0, m_frequency_penalty);
+
+  int mirostat = 0;
+  if (rime_api->config_get_int(&config, "llm/llamacpp/mirostat", &mirostat)) {
+    m_mirostat = mirostat;
+    if (g_dev_console && g_dev_console->IsEnabled()) {
+      g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/llamacpp/mirostat = " + std::to_wstring(m_mirostat));
+    }
+  } else {
+    m_mirostat = 0;
+    if (g_dev_console && g_dev_console->IsEnabled()) {
+      g_dev_console->WriteLine(L"[LLM] 未找到配置项 llm/llamacpp/mirostat，使用默认值 = " + std::to_wstring(m_mirostat));
+    }
+  }
+  if (m_mirostat < 0) m_mirostat = 0;
+  if (m_mirostat > 2) m_mirostat = 2;
+
+  load_float_config("llm/llamacpp/min_p", 0.05, m_min_p);
+  load_float_config("llm/llamacpp/typical_p", 1.0, m_typical_p);
 
   // 线程数（可选，默认4）
   int n_threads = 4;
@@ -296,14 +343,33 @@ bool LlamaCppProvider::InitializeModel() {
   // 初始化采样器
   llama_sampler_chain_params smpl_params = llama_sampler_chain_default_params();
   llama_sampler* smpl = llama_sampler_chain_init(smpl_params);
-  
-  // 添加 min_p 采样器
-  llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
-  
-  // 添加温度采样器
-  llama_sampler_chain_add(smpl, llama_sampler_init_temp((float)m_temperature));
-  
-  // 添加随机采样器
+
+  // 常用顺序：penalties -> top_k/top_p/min_p/typical -> temperature -> distribution
+  // 其中 mirostat 为自适应采样，开启后通常不叠加 top_k/top_p/min_p/typical。
+  llama_sampler_chain_add(smpl, llama_sampler_init_penalties(
+      -1,
+      (float)m_repeat_penalty,
+      (float)m_frequency_penalty,
+      (float)m_presence_penalty));
+
+  if (m_mirostat == 1) {
+    const int n_vocab = llama_vocab_n_tokens((const llama_vocab*)m_vocab);
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp((float)m_temperature));
+    llama_sampler_chain_add(smpl, llama_sampler_init_mirostat(
+        n_vocab, LLAMA_DEFAULT_SEED, 5.0f, 0.1f, 100));
+  } else if (m_mirostat == 2) {
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp((float)m_temperature));
+    llama_sampler_chain_add(smpl, llama_sampler_init_mirostat_v2(
+        LLAMA_DEFAULT_SEED, 5.0f, 0.1f));
+  } else {
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(m_top_k));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_p((float)m_top_p, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_min_p((float)m_min_p, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_typical((float)m_typical_p, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp((float)m_temperature));
+  }
+
+  // 添加随机采样器（最终按分布采样）
   llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
   m_sampler = smpl;
