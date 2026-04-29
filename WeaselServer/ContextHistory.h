@@ -44,6 +44,11 @@ class ContextHistory {
 
   // 设置记忆压缩器（从 weasel 配置 llm/memory/ 加载），用于超过容量时压缩旧词
   void SetMemoryCompressor(MemoryCompressor* compressor) { m_memory_compressor = compressor; }
+  // 设置压缩完成回调（压缩成功替换历史后触发）
+  void SetCompressionCompletedCallback(std::function<void()> callback) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_compression_completed_callback = std::move(callback);
+  }
 
  private:
   // 将文本分割成词（简单实现：按空格和标点符号分割）
@@ -70,5 +75,6 @@ class ContextHistory {
   size_t m_max_size;  // 最大记录数量
   MemoryCompressor* m_memory_compressor;  // 记忆压缩 LLM（可为 nullptr）
   bool m_compressing;  // 是否正在压缩，避免重复触发
+  std::function<void()> m_compression_completed_callback;
 };
 

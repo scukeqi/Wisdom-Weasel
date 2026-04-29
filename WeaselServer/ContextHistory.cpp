@@ -6,6 +6,7 @@
 #include <sstream>
 #include <locale>
 #include <codecvt>
+#include <thread>
 
 ContextHistory::ContextHistory(size_t max_size)
     : m_max_size(max_size > 0 ? max_size : 50),
@@ -150,20 +151,30 @@ std::vector<std::wstring> ContextHistory::GetOldestWords(size_t count) const {
 
 void ContextHistory::ReplaceOldestWithCompressed(
     const std::vector<std::wstring>& compressed, DevConsole* dev_console) {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  size_t compress_count = GetCompressWordCount();
-  if (m_history.size() < compress_count) return;
-  m_history.erase(m_history.begin(), m_history.begin() + compress_count);
-  m_history.insert(m_history.begin(), compressed.begin(), compressed.end());
-  while (m_history.size() > m_max_size) {
-    m_history.erase(m_history.begin());
+  std::function<void()> on_compression_completed;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    size_t compress_count = GetCompressWordCount();
+    if (m_history.size() < compress_count) return;
+    m_history.erase(m_history.begin(), m_history.begin() + compress_count);
+    m_history.insert(m_history.begin(), compressed.begin(), compressed.end());
+    while (m_history.size() > m_max_size) {
+      m_history.erase(m_history.begin());
+    }
+    m_compressing = false;
+    if (dev_console && dev_console->IsEnabled()) {
+      std::wstringstream ss;
+      ss << L"[记忆压缩] 完成，压缩为 " << compressed.size() << L" 个词，当前历史: "
+         << m_history.size();
+      dev_console->WriteLine(ss.str());
+    }
+    on_compression_completed = m_compression_completed_callback;
   }
-  m_compressing = false;
-  if (dev_console && dev_console->IsEnabled()) {
-    std::wstringstream ss;
-    ss << L"[记忆压缩] 完成，压缩为 " << compressed.size() << L" 个词，当前历史: "
-       << m_history.size();
-    dev_console->WriteLine(ss.str());
+  if (on_compression_completed) {
+    // 在压缩回调线程中异步触发后续预热，不影响当前历史更新路径。
+    std::thread([on_compression_completed]() {
+      on_compression_completed();
+    }).detach();
   }
 }
 
